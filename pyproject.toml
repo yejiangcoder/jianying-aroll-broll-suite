@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jianying-ai-broll-aligner"
+version = "0.1.0"
+description = "Local automation toolkit for AI-assisted B-roll placement in Jianying / CapCut drafts."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "jianying-ai-broll-aligner contributors" }]
+keywords = ["jianying", "capcut", "video-editing", "b-roll", "subtitles", "automation"]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+jianying-ai-broll-aligner = "jianying_ai_broll_aligner.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
