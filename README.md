@@ -49,7 +49,7 @@ editable AI_BROLL image clips in a draft timeline
 - Scan AI image directories by stable image IDs.
 - Parse SRT subtitle files.
 - Parse Jianying-style `attachment_script_video.json` files when available.
-- Match B-roll target quotes to subtitle text with normalized fuzzy matching.
+- Match B-roll target quotes to subtitle text with global text-anchor matching and normalized fuzzy fallback.
 - Enforce fixed image duration, default `1.3s`.
 - Build `broll_semantic_plan.csv` and `broll_exec_plan.csv`.
 - Append photo materials and segments to a draft JSON adapter layer.
@@ -137,4 +137,3 @@ You should keep private draft files, generated images, and editor runtime folder
 ## License
 
 MIT
-
