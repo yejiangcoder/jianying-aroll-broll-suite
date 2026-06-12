@@ -1,0 +1,8 @@
+{
+  "broll_design": "examples/broll_design_sample.md",
+  "subtitles": "examples/final_subtitles_sample.srt",
+  "image_dir": "examples/assets",
+  "output_dir": "runtime/sample_run",
+  "duration_sec": 1.3
+}
+

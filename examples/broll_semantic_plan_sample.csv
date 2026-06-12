@@ -1,0 +1,5 @@
+image_id,image_path,image_title,target_quote,visual_direction,duration_sec
+01,examples/assets/sample_AI_01_office.png,sample_AI_01_office,He finally closes the laptop and walks outside.,A man leaving an office at night,1.300
+02,examples/assets/sample_AI_02_phone.png,sample_AI_02_phone,The phone stays silent all weekend.,A quiet room with a phone on the bed,1.300
+03,examples/assets/sample_AI_03_plan.png,sample_AI_03_plan,By Monday the plan is written on one page.,A notebook page with a simple plan,1.300
+

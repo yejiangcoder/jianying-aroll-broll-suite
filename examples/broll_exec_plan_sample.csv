@@ -1,0 +1,5 @@
+image_id,image_path,subtitle_index,subtitle_text,start_sec,duration_sec,target_quote,match_method,confidence
+01,examples/assets/sample_AI_01_office.png,1,He finally closes the laptop and walks outside.,0.000,1.300,He finally closes the laptop and walks outside.,exact_or_contains,1.000
+02,examples/assets/sample_AI_02_phone.png,2,The phone stays silent all weekend.,2.400,1.300,The phone stays silent all weekend.,exact_or_contains,1.000
+03,examples/assets/sample_AI_03_plan.png,3,"By Monday, the plan is written on one page.",4.800,1.300,By Monday the plan is written on one page.,normalized_fuzzy,0.962
+
