@@ -6,7 +6,7 @@ I maintain an open-source local automation toolkit for AI-assisted video editing
 
 ## Repository URL
 
-To be filled after the public GitHub repository is created.
+https://github.com/yejiangcoder/jianying-ai-broll-aligner
 
 ## Maintainer Info
 
@@ -48,4 +48,3 @@ Maintenance work includes parser fixes, fixture-driven adapter updates, issue tr
 ## Security / Privacy Statement
 
 The project is local-first. It does not upload user media. The public repository contains fictional examples only and excludes runtime files, media assets, logs, local config, and credentials.
-
