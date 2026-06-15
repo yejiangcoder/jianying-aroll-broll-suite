@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# env/local config
+.env
+.env.*
+!/.env.example
+config/runtime_paths.local.yaml
+
+# runtime and generated outputs
+runtime/
+release/
+dev_snapshot/
+logs/
+exports/
+temp/
+cache/
+reports/
+audio_vad/
+post_inspect_runtime/
+baseline_backup/
+backup/
+restore_check/
+
+# large media / draft artifacts
+*.s16le
+*.tmp
+draft_content*.json
+draft_content*.dec.json
+draft_content*.enc.json
+template-2.tmp
+
+# images/video outputs
+ai_images/
+outputs/
+*.mp4
+*.mov
+*.wav
+*.mp3
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# keep fixtures explicit
+!tests/fixtures/**
+!fixtures/small/**

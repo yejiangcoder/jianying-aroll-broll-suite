@@ -1,0 +1,19 @@
+{
+  "profile_name": "editable_default_template",
+  "default_draft_root": "EDIT_ME_DRAFT_ROOT",
+  "default_draft_name": "EDIT_ME_DRAFT_NAME",
+  "default_script_path": "",
+  "allow_constant_speed": true,
+  "max_allowed_speed": 1.25,
+  "runtime_mode": "production",
+  "run_cleanup_before": true,
+  "run_cleanup_after": true,
+  "keep_debug_dec_json": false,
+  "keep_audio_pcm": false,
+  "auto_close_jianying": false,
+  "preflight_only": false,
+  "regression_profile": "report_only",
+  "regression_fatal": false,
+  "semantic_arbiter_model": "deepseek-chat",
+  "max_semantic_repair_iterations": 3
+}

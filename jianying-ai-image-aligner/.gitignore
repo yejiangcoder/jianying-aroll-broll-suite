@@ -1,0 +1,12 @@
+runtime/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
+*.tmp
+*.s16le
+draft_content*.json
+draft_content*.dec.json
+draft_content*.enc.json
+template-2.tmp
+.env
