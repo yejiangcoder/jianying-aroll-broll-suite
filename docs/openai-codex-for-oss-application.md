@@ -2,11 +2,11 @@
 
 ## Project Summary
 
-I maintain an open-source local automation toolkit for AI-assisted video editing workflows. The project helps creators working with Jianying / CapCut automate repetitive B-roll placement by parsing B-roll design documents, matching subtitle timestamps, managing AI-generated image assets, and writing editable image clips into draft timelines.
+I maintain an open-source local automation suite for AI-assisted video editing workflows. The project helps creators working with Jianying / CapCut automate A-Roll editing workflows and B-Roll image alignment by combining draft inspection, safety gates, subtitle-aware planning, AI image matching, and editable timeline write workflows.
 
 ## Repository URL
 
-https://github.com/yejiangcoder/jianying-ai-broll-aligner
+https://github.com/yejiangcoder/jianying-aroll-broll-suite
 
 ## Maintainer Info
 

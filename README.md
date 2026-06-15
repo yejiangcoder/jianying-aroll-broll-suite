@@ -1,14 +1,19 @@
-# jianying-ai-broll-aligner
+# jianying-aroll-broll-suite
 
-A local automation toolkit for AI-assisted B-roll placement in Jianying / CapCut drafts.
+Jianying / CapCut automation suite for A-Roll editing and AI-assisted B-Roll image alignment.
 
-This toolkit parses B-roll design documents, matches subtitle timestamps, manages AI-generated image assets, and writes editable B-roll image clips into Jianying / CapCut draft timelines.
+This toolkit combines maintained A-Roll editing automation with B-Roll image alignment workflows for Jianying / CapCut drafts.
 
 This project was developed with Codex to reduce repetitive editing work in AI-assisted video production workflows.
 
 ## What It Does
 
-`jianying-ai-broll-aligner` turns a structured B-roll markdown plan and a final subtitle timeline into an execution plan for editable image clips. When a readable draft JSON structure is available, it can also append a dedicated `AI_BROLL` image track to the draft content.
+`jianying-aroll-broll-suite` brings together two local-first workflows:
+
+- A-Roll editing tools for draft inspection, safety gates, rewrite planning, and production operator flows.
+- B-Roll image alignment tools that turn a structured B-roll markdown plan and a final subtitle timeline into an execution plan for editable image clips.
+
+When a readable draft JSON structure is available, the B-Roll workflow can also append a dedicated `AI_BROLL` image track to the draft content.
 
 It is local-first:
 

@@ -63,7 +63,7 @@ def command_clean_runtime(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="jianying-ai-broll-aligner")
+    parser = argparse.ArgumentParser(prog="jianying-aroll-broll-suite")
     sub = parser.add_subparsers(dest="command", required=True)
 
     plan = sub.add_parser("plan", help="Build semantic and execution plans.")
@@ -100,4 +100,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
