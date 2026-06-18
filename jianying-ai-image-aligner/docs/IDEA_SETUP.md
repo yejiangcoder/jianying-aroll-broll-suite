@@ -3,14 +3,14 @@
 Open only:
 
 ```text
-D:\video tools\jianying-ai-image-aligner
+<suite-root>\jianying-ai-image-aligner
 ```
 
 Do not open:
 
 ```text
-D:\video tools
-D:\auto_clip_runtime
+<suite-root>
+<runtime-root>
 ```
 
 Daily Codex context should be limited to:
@@ -20,7 +20,7 @@ Daily Codex context should be limited to:
 - `docs/`
 - `README.md`
 - `AGENTS.md`
-- `agent_inputs.json`
+- `agent_inputs.example.json`
 
 Do not include these in routine Codex context:
 
@@ -29,3 +29,4 @@ Do not include these in routine Codex context:
 - historical JSON reports
 - decrypted or encrypted draft artifacts
 - image and video outputs
+- local `agent_inputs.json`

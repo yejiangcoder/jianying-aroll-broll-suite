@@ -1,0 +1,46 @@
+{
+  "source_segments": [
+    {
+      "id": "clip_multi_char",
+      "material_id": "main_video_a",
+      "source_start_us": 0,
+      "source_end_us": 2000000
+    }
+  ],
+  "word_timeline": [
+    {
+      "word_id": "w001",
+      "word_text": "恐慌",
+      "start_us": 100000,
+      "end_us": 350000,
+      "subtitle_index": 1,
+      "subtitle_uid": "s001"
+    },
+    {
+      "word_id": "w002",
+      "word_text": "这种",
+      "start_us": 360000,
+      "end_us": 580000,
+      "subtitle_index": 2,
+      "subtitle_uid": "s002"
+    }
+  ],
+  "subtitles": [
+    {
+      "subtitle_uid": "s001",
+      "subtitle_index": 1,
+      "text": "恐慌",
+      "word_ids": [
+        "w001"
+      ]
+    },
+    {
+      "subtitle_uid": "s002",
+      "subtitle_index": 2,
+      "text": "这种",
+      "word_ids": [
+        "w002"
+      ]
+    }
+  ]
+}

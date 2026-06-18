@@ -1,0 +1,52 @@
+{
+  "source_segments": [
+    {
+      "id": "clip_a",
+      "material_id": "main_video_a",
+      "source_start_us": 0,
+      "source_end_us": 2000000
+    },
+    {
+      "id": "clip_b",
+      "material_id": "main_video_a",
+      "source_start_us": 2600000,
+      "source_end_us": 4200000
+    }
+  ],
+  "word_timeline": [
+    {
+      "word_id": "w001",
+      "word_text": "第一句",
+      "start_us": 100000,
+      "end_us": 400000,
+      "subtitle_index": 1,
+      "subtitle_uid": "s001"
+    },
+    {
+      "word_id": "w002",
+      "word_text": "第二句",
+      "start_us": 2700000,
+      "end_us": 3100000,
+      "subtitle_index": 2,
+      "subtitle_uid": "s002"
+    }
+  ],
+  "subtitles": [
+    {
+      "subtitle_uid": "s001",
+      "subtitle_index": 1,
+      "text": "第一句",
+      "word_ids": [
+        "w001"
+      ]
+    },
+    {
+      "subtitle_uid": "s002",
+      "subtitle_index": 2,
+      "text": "第二句",
+      "word_ids": [
+        "w002"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "case_id": "failed_repair_applier_blocked_case",
+  "fixture_origin": "synthetic_realistic",
+  "real_uat": false,
+  "description": "Synthetic realistic capsule placeholder for legacy repair applier blocked failure.",
+  "required_artifacts": [
+    "source_graph.json",
+    "edit_units.json",
+    "repeat_clusters.json",
+    "decision_plan.json",
+    "final_timeline.json",
+    "final_edl.json",
+    "captions.json",
+    "canonical_caption_template.json",
+    "material_write_plan.json",
+    "validator_report.json",
+    "postwrite_report.json",
+    "blocker_report.json",
+    "decision_trace.json"
+  ]
+}

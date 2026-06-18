@@ -26,6 +26,8 @@ class HiddenRepeatGenericTest(unittest.TestCase):
         )
         self.assertFalse(report["hidden_audio_repeat_gate_passed"])
         self.assertGreater(report["word_timeline_repeated_island_count"], 0)
+        self.assertGreater(len(report["blocking_issues"]), 0)
+        self.assertGreater(len(report["issues"]), 0)
         self.assertTrue(report["word_timeline_hidden_repeat_supported"])
 
     def test_production_core_has_no_hardcoded_phrase_patch(self) -> None:

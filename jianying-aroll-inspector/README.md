@@ -1,32 +1,24 @@
 # Jianying A-Roll Inspector
 
-Phase 1 A-Roll read-only draft structure inspector.
-
-This tool inspects a prepared Jianying draft and reports whether it is safe to proceed to an A-Roll EDL rewrite phase.
+A-Roll draft inspection and production tooling for Jianying drafts.
 
 ## Scope
 
-This tool only does:
+`run_aroll_inspect.ps1` / `src/aroll_inspect.py` are read-only. Inspect decrypts the target timeline into an external runtime directory, reads video/audio/text/filter structure, exports `subtitle_timeline.json` and `aroll_inspect_report.json`, and decides `can_aroll_rewrite`.
 
-- Decrypt the target timeline `draft_content.json` into `runtime/`.
-- Read video/audio/text/filter track structure.
-- Export `subtitle_timeline.json`.
-- Export `aroll_inspect_report.json`.
-- Decide `can_aroll_rewrite`.
+Inspect does not write back to any Jianying draft, call `encrypt()`, call DeepSeek, generate EDL, or modify video/text/audio/filter tracks.
 
-This tool does not:
+Operator/UAT/Phase4E are the writeback chain. They are production execution paths and may back up, rewrite, encrypt, and write draft files after gates pass. Real UAT and writeback are Desktop Codex responsibilities, not IDEA Codex responsibilities.
 
-- Write back to any Jianying draft.
-- Call `encrypt()`.
-- Call DeepSeek.
-- Generate EDL.
-- Modify video/text/audio/filter tracks.
-- Modify `D:\video tools\jianying-ai-image-aligner`.
+## Codex Roles
 
-## Run
+IDEA Codex is for precise code edits, lightweight tests, and small gate fixes. It must not open real drafts, scan runtime directories, run real UAT, call `encrypt()`, or write `draft_content.json` / `template-2.tmp`.
+
+Desktop Codex is responsible for real Jianying UAT, long-running local execution, worktree maintenance, packaging, runtime cleanup execution, and production writeback.
+
+## Inspect Run
 
 ```powershell
-cd "D:\video tools\jianying-aroll-inspector"
 .\run_aroll_inspect.ps1 -DraftDir "EDIT_ME_DRAFT_DIR"
 ```
 
@@ -41,21 +33,19 @@ Optional main-track hints:
 ```powershell
 .\run_aroll_inspect.ps1 `
   -DraftDir "EDIT_ME_DRAFT_DIR" `
-  -MainMaterialPath "D:\video\raw.mp4"
+  -MainMaterialPath "EDIT_ME_RAW_VIDEO_PATH"
 ```
 
-If `-DraftDir` is not provided, the runner will try to read:
+If `-DraftDir` is not provided, the runner only reads agent inputs when `-InputJson` is explicitly provided or `JY_ALIGNER_ROOT` points to an aligner checkout containing `agent_inputs.json`.
+
+## Runtime
+
+Runtime output is external by default and resolved through `AUTO_CLIP_AROLL_RUNS_DIR`, `AUTO_CLIP_RUNTIME_DIR`, or `config/runtime_paths*.yaml`. Project-local `runtime/` remains ignored only as a historical safety net.
+
+Inspect writes a timestamped directory named:
 
 ```text
-D:\video tools\jianying-ai-image-aligner\agent_inputs.json
-```
-
-## Output
-
-Each run writes a timestamped directory:
-
-```text
-D:\video tools\jianying-aroll-inspector\runtime\aroll_inspect_YYYYMMDD_HHMMSS\
+aroll_inspect_YYYYMMDD_HHMMSS
 ```
 
 Files:
@@ -68,21 +58,13 @@ subtitle_timeline.json
 
 ## Conservative Failures
 
-`can_aroll_rewrite` becomes `false` when the inspector detects:
+`can_aroll_rewrite` becomes `false` when inspect detects:
 
 - Timeline ID mismatch.
 - Duplicate timeline IDs in `timeline_layout.json`.
 - No readable subtitle track.
 - Main video track missing or ambiguous.
 - Existing `AI_BROLL` or photo-heavy B-Roll.
-- Non-1.0x speed, curve speed, reverse, or source/target duration mismatch.
+- Unsupported speed, curve speed, reverse, or source/target duration mismatch.
 - Independent audio that cannot be proven to be the main source.
 - Complex filter/effect tracks or unrecognized attached effect refs.
-
-## Open Source Export Notice
-
-This repository contains source code only.
-
-Runtime artifacts, Jianying drafts, media files, generated images, local configs, cookies, and API keys are not included.
-
-Configure local runtime paths with environment variables or example config files.

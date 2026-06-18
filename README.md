@@ -1,143 +1,57 @@
 # jianying-aroll-broll-suite
 
-Jianying / CapCut automation suite for A-Roll editing and AI-assisted B-Roll image alignment.
+Local-first Jianying / CapCut automation suite for A-Roll rough-cut editing and B-Roll AI image alignment.
 
-This toolkit combines maintained A-Roll editing automation with B-Roll image alignment workflows for Jianying / CapCut drafts.
+The repository is organized around two maintained subprojects:
 
-This project was developed with Codex to reduce repetitive editing work in AI-assisted video production workflows.
+- `jianying-aroll-inspector`: A-Roll v21 inspection, semantic decision, quality-gate, and draft writeback tooling.
+- `jianying-ai-image-aligner`: B-Roll image alignment v0.2, which writes AI image clips into a prepared draft from a `visual_slot_plan`.
 
-## What It Does
+No production media, private drafts, generated images, runtime folders, or credentials are included.
 
-`jianying-aroll-broll-suite` brings together two local-first workflows:
+## Current Workflow
 
-- A-Roll editing tools for draft inspection, safety gates, rewrite planning, and production operator flows.
-- B-Roll image alignment tools that turn a structured B-roll markdown plan and a final subtitle timeline into an execution plan for editable image clips.
+1. Prepare a Jianying / CapCut draft with source video and subtitles.
+2. Run A-Roll v21 from `jianying-aroll-inspector`.
+3. QC the A-Roll result before downstream stages.
+4. Generate or provide B-Roll design data and normalized AI images.
+5. Run `jianying-ai-image-aligner` v0.2 with a `visual_slot_plan`.
+6. QC the final draft after B-Roll image alignment.
 
-When a readable draft JSON structure is available, the B-Roll workflow can also append a dedicated `AI_BROLL` image track to the draft content.
+The old UI, screenshot-drag, overlay-video, and fixed `1.3s` B-Roll alignment routes have been removed. B-Roll image durations come from `target_end_us - target_start_us` in the visual slot plan.
 
-It is local-first:
+## Runtime And Secrets
 
-- Input: B-roll design markdown, final subtitles, local AI-generated image directory.
-- Output: semantic plan CSV, execution plan CSV, optional modified draft JSON.
-- No cloud upload is required by this package.
-- No real user media, private drafts, or production assets are included in this repository.
-- This is not a video generator and not a commercial appearance or private delivery system.
+Keep runtime output and secrets outside this repository.
 
-## Why It Exists
+Recommended environment variables:
 
-AI-assisted video workflows often create dozens of B-roll images, but manually placing each image on a timeline is repetitive and error-prone. This project automates the bridge between:
-
-```text
-B-roll design document
-        +
-AI image assets
-        +
-final subtitle timestamps
-        |
-        v
-editable AI_BROLL image clips in a draft timeline
+```powershell
+$env:AUTO_CLIP_RUNTIME_DIR="$HOME\.auto_clip_runtime"
+$env:IMAGE_ALIGNER_RUNTIME_DIR="$HOME\.auto_clip_runtime\image_aligner"
+$env:JY_DRAFTC_EXE="<path-to-jy-draftc.exe>"
+$env:DEEPSEEK_API_KEY="<your-key-if-using-deepseek>"
 ```
 
-## Workflow
+For file-based DeepSeek config, copy `jianying-aroll-inspector/config/deepseek.example.yaml` to `jianying-aroll-inspector/config/deepseek.local.yaml`. Local config files are ignored by Git.
 
-1. Write a B-roll design document with one row per intended AI image.
-2. Export or read the final subtitle timeline.
-3. Put generated AI images in a local directory using stable IDs such as `sample_AI_01_office.png`.
-4. Build a semantic plan from the design document and image directory.
-5. Match each B-roll target quote to subtitle start times.
-6. Write an execution plan.
-7. Optionally append an editable `AI_BROLL` track to a readable Jianying / CapCut draft JSON.
+## Quick Checks
 
-## Features
-
-- Parse markdown B-roll tables and block-style AI image entries.
-- Scan AI image directories by stable image IDs.
-- Parse SRT subtitle files.
-- Parse Jianying-style `attachment_script_video.json` files when available.
-- Match B-roll target quotes to subtitle text with global text-anchor matching and normalized fuzzy fallback.
-- Enforce fixed image duration, default `1.3s`.
-- Build `broll_semantic_plan.csv` and `broll_exec_plan.csv`.
-- Append photo materials and segments to a draft JSON adapter layer.
-- Clean runtime output directories safely.
-
-## Installation
-
-```bash
-python -m pip install -e .
+```powershell
+py -3 -m compileall -q "jianying-aroll-inspector\src" "jianying-ai-image-aligner\src"
 ```
 
-For tests:
+With real local inputs, run the B-Roll preflight contract check:
 
-```bash
-python -m pip install -e ".[dev]"
-python -m pytest
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "jianying-ai-image-aligner\run_pipeline_contract_check.ps1" `
+  -DraftDir "<path-to-jianying-draft>" `
+  -BrollMd "<path-to-broll-design.md>" `
+  -ImageDir "<path-to-ai-images>" `
+  -VisualSlotPlan "<path-to-visual-slot-plan.json>"
 ```
 
-## Quick Start
-
-Create a plan from the included examples:
-
-```bash
-python -m jianying_ai_broll_aligner.cli plan \
-  --broll examples/broll_design_sample.md \
-  --subtitles examples/final_subtitles_sample.srt \
-  --image-dir examples/assets \
-  --output-dir runtime/sample_run \
-  --duration-sec 1.3
-```
-
-The command writes:
-
-- `runtime/sample_run/broll_semantic_plan.csv`
-- `runtime/sample_run/broll_exec_plan.csv`
-
-## Input Examples
-
-See:
-
-- `examples/broll_design_sample.md`
-- `examples/final_subtitles_sample.srt`
-- `examples/config.sample.json`
-
-Example B-roll row:
-
-```markdown
-| index | type | target_quote | visual_direction |
-| --- | --- | --- | --- |
-| 01 | AI image | "He finally closes the laptop and walks outside." | A man leaving an office at night |
-```
-
-## Output Examples
-
-See:
-
-- `examples/broll_semantic_plan_sample.csv`
-- `examples/broll_exec_plan_sample.csv`
-
-Execution rows include:
-
-- `image_id`
-- `image_path`
-- `subtitle_index`
-- `subtitle_text`
-- `start_sec`
-- `duration_sec`
-- `match_method`
-- `confidence`
-
-## Privacy / Local-First Statement
-
-This repository is designed as a local creator tool. It does not include real drafts, real production footage, real private scripts, generated image caches, runtime screenshots, or credentials. The included examples are fictional.
-
-You should keep private draft files, generated images, and editor runtime folders outside the repository. The default `.gitignore` excludes media files, runtime folders, logs, local config, and secret files.
-
-## Roadmap
-
-- Improve draft adapters for more Jianying / CapCut versions.
-- Add more subtitle source readers.
-- Add regression fixtures for draft timeline structures.
-- Add safer dry-run validation before draft writes.
-- Add optional OpenTimelineIO / XML export.
+Run the larger A-Roll test suite from `jianying-aroll-inspector` when you have the required local draft fixtures and dependencies available.
 
 ## License
 

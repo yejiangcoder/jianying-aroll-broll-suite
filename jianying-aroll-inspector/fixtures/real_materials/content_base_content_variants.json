@@ -1,0 +1,23 @@
+{
+  "json_string_payload": {
+    "content": "{\"text\":\"字幕\",\"styles\":[{\"range\":{\"start\":0,\"end\":2},\"font_size\":40}]}",
+    "base_content": "{\"text\":\"字幕\",\"styles\":[{\"range\":{\"start\":0,\"end\":2},\"font_size\":40}]}"
+  },
+  "dict_payload": {
+    "content": {
+      "text": "字幕",
+      "styles": [
+        {
+          "range": {
+            "start": 0,
+            "end": 2
+          },
+          "font_size": 40
+        }
+      ]
+    }
+  },
+  "invalid_plain_text_payload": {
+    "content": "字幕"
+  }
+}

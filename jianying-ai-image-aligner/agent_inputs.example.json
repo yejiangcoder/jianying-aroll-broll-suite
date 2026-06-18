@@ -1,0 +1,12 @@
+{
+  "draft_dir": "<path-to-jianying-draft>",
+  "broll_md": "<path-to-broll-design.md>",
+  "ai_image_dir": "<path-to-normalized-ai-images>",
+  "visual_slot_plan": "<path-to-visual-slot-plan.json>",
+  "jy_draftc": "%JY_DRAFTC_EXE%",
+  "notes": [
+    "This file is documentation only. run_direct_draft_write.ps1 and run_pipeline_contract_check.ps1 require explicit arguments.",
+    "AI image filenames must contain _AI_<number>_.",
+    "visual_slot_plan supplies target_start_us and target_end_us; no fixed image duration is used."
+  ]
+}

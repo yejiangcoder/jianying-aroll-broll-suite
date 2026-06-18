@@ -1,6 +1,6 @@
 # Project Layout
 
-`D:\video tools\jianying-aroll-inspector` is the lightweight source directory.
+`<suite-root>\jianying-aroll-inspector` is the lightweight source directory.
 
 Keep in this directory:
 
@@ -31,5 +31,5 @@ Keep outside this directory:
 Default external runtime root:
 
 ```text
-D:\auto_clip_runtime
+<runtime-root>
 ```

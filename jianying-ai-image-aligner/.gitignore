@@ -10,3 +10,4 @@ draft_content*.dec.json
 draft_content*.enc.json
 template-2.tmp
 .env
+agent_inputs.json

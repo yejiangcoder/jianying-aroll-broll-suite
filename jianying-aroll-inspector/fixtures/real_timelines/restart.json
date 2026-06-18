@@ -1,0 +1,47 @@
+{
+  "fixture_origin": "synthetic_realistic",
+  "source_segments": [
+    {
+      "id": "clip_restart",
+      "material_id": "main_video_a",
+      "source_start_us": 0,
+      "source_end_us": 2000000
+    }
+  ],
+  "word_timeline": [
+    {
+      "word_id": "w001",
+      "word_text": "我就",
+      "start_us": 100000,
+      "end_us": 300000,
+      "subtitle_index": 1,
+      "subtitle_uid": "s001"
+    },
+    {
+      "word_id": "w002",
+      "word_text": "我发现",
+      "start_us": 320000,
+      "end_us": 700000,
+      "subtitle_index": 2,
+      "subtitle_uid": "s002"
+    }
+  ],
+  "subtitles": [
+    {
+      "subtitle_uid": "s001",
+      "subtitle_index": 1,
+      "text": "我就",
+      "word_ids": [
+        "w001"
+      ]
+    },
+    {
+      "subtitle_uid": "s002",
+      "subtitle_index": 2,
+      "text": "我发现",
+      "word_ids": [
+        "w002"
+      ]
+    }
+  ]
+}

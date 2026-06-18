@@ -10,6 +10,7 @@ TOOL_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = TOOL_ROOT / "config"
 LOCAL_CONFIG = CONFIG_DIR / "runtime_paths.local.yaml"
 EXAMPLE_CONFIG = CONFIG_DIR / "runtime_paths.example.yaml"
+DEFAULT_EXTERNAL_RUNTIME_ROOT = Path.home() / ".auto_clip_runtime"
 
 
 def _clean_value(value: str) -> str:
@@ -58,8 +59,6 @@ def _nested(config: dict[str, Any], *keys: str) -> str:
 def _config() -> dict[str, Any]:
     if LOCAL_CONFIG.exists():
         return _load_simple_yaml(LOCAL_CONFIG)
-    if EXAMPLE_CONFIG.exists():
-        return _load_simple_yaml(EXAMPLE_CONFIG)
     return {}
 
 
@@ -72,7 +71,7 @@ def _path_from_env_or_config(env_key: str, config_keys: tuple[str, ...], fallbac
     if config_value:
         return Path(config_value)
     warnings.warn(
-        f"{env_key} and config path {'.'.join(config_keys)} are not configured; falling back to project-local {fallback}",
+        f"{env_key} and config path {'.'.join(config_keys)} are not configured; falling back to {fallback}",
         RuntimeWarning,
         stacklevel=2,
     )
@@ -80,7 +79,7 @@ def _path_from_env_or_config(env_key: str, config_keys: tuple[str, ...], fallbac
 
 
 def get_runtime_root() -> Path:
-    return _path_from_env_or_config("AUTO_CLIP_RUNTIME_DIR", ("runtime_root",), TOOL_ROOT / "runtime")
+    return _path_from_env_or_config("AUTO_CLIP_RUNTIME_DIR", ("runtime_root",), DEFAULT_EXTERNAL_RUNTIME_ROOT)
 
 
 def get_aroll_runs_dir() -> Path:

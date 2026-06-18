@@ -1,0 +1,19 @@
+{
+  "material": {
+    "id": "caption_template_001",
+    "role": "caption",
+    "type": "text",
+    "font_size": 42,
+    "content": "{\"text\":\"示例字幕\",\"styles\":[{\"range\":{\"start\":0,\"end\":4},\"font_size\":42,\"fill\":{\"color\":\"#FFFFFF\"},\"stroke\":{\"color\":\"#000000\",\"width\":4}}]}",
+    "base_content": "{\"text\":\"示例字幕\",\"styles\":[{\"range\":{\"start\":0,\"end\":4},\"font_size\":42,\"fill\":{\"color\":\"#FFFFFF\"},\"stroke\":{\"color\":\"#000000\",\"width\":4}}]}"
+  },
+  "segment": {
+    "id": "caption_segment_001",
+    "type": "text",
+    "material_id": "caption_template_001",
+    "target_timerange": {
+      "start": 0,
+      "duration": 1000000
+    }
+  }
+}

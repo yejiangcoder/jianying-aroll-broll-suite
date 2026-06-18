@@ -1,0 +1,20 @@
+{
+  "fixture_origin": "synthetic_realistic",
+  "material": {
+    "id": "malformed_caption_001",
+    "role": "caption",
+    "type": "text",
+    "font_size": 42,
+    "content": "这不是JSON",
+    "base_content": "{\"text\":\"字幕\",\"styles\":[{\"range\":{\"start\":0,\"end\":2},\"font_size\":42}]}"
+  },
+  "segment": {
+    "id": "malformed_caption_segment_001",
+    "type": "text",
+    "material_id": "malformed_caption_001",
+    "target_timerange": {
+      "start": 0,
+      "duration": 1000000
+    }
+  }
+}

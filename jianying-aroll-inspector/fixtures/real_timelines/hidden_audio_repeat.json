@@ -1,0 +1,62 @@
+{
+  "source_segments": [
+    {
+      "id": "clip_hidden_repeat",
+      "material_id": "main_video_a",
+      "source_start_us": 0,
+      "source_end_us": 3000000
+    }
+  ],
+  "word_timeline": [
+    {
+      "word_id": "w001",
+      "word_text": "你跪在地上",
+      "start_us": 100000,
+      "end_us": 500000,
+      "subtitle_index": 1,
+      "subtitle_uid": "s001"
+    },
+    {
+      "word_id": "w002",
+      "word_text": "你跪在地上",
+      "start_us": 520000,
+      "end_us": 900000,
+      "subtitle_index": 2,
+      "subtitle_uid": "s002"
+    },
+    {
+      "word_id": "w003",
+      "word_text": "叫大佬",
+      "start_us": 920000,
+      "end_us": 1200000,
+      "subtitle_index": 3,
+      "subtitle_uid": "s003"
+    }
+  ],
+  "subtitles": [
+    {
+      "subtitle_uid": "s001",
+      "subtitle_index": 1,
+      "text": "你跪在地上",
+      "word_ids": [
+        "w001"
+      ]
+    },
+    {
+      "subtitle_uid": "s002",
+      "subtitle_index": 2,
+      "text": "你跪在地上",
+      "word_ids": [
+        "w002"
+      ]
+    },
+    {
+      "subtitle_uid": "s003",
+      "subtitle_index": 3,
+      "text": "叫大佬",
+      "word_ids": [
+        "w003"
+      ]
+    }
+  ]
+}

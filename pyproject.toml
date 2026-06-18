@@ -16,8 +16,5 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 
-[project.scripts]
-jianying-aroll-broll-suite = "jianying_ai_broll_aligner.cli:main"
-
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.setuptools]
+packages = []

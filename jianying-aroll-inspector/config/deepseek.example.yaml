@@ -1,0 +1,5 @@
+deepseek:
+  # Replace with your real DeepSeek API key, or copy this file to deepseek.local.yaml
+  api-key: "REPLACE_WITH_DEEPSEEK_API_KEY"
+  base-url: "https://api.deepseek.com"
+  model: "deepseek-chat"

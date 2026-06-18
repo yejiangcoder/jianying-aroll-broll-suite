@@ -10,9 +10,10 @@ from pathlib import Path
 from typing import Any
 
 
+TOOL_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = Path(
     os.environ.get("DEEPSEEK_CONFIG_PATH")
-    or (Path("D:/") / "idea-project" / "videoDataCatcher" / "src" / "main" / "resources" / "application.yaml")
+    or (TOOL_ROOT / "config" / "deepseek.local.yaml")
 )
 
 

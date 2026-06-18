@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "case_id": "example_minimal",
+  "description": "Placeholder manifest documenting the V21 capsule contract.",
+  "source": {
+    "kind": "sanitized_aroll_v21_uat_capsule",
+    "exporter": "tools/export_aroll_v21_uat_capsule.py"
+  },
+  "artifacts": {
+    "source_graph": "source_graph.json",
+    "repeat_clusters": "repeat_clusters.json",
+    "decision_plan": "decision_plan.json",
+    "final_timeline": "final_timeline.json",
+    "captions": "captions.json",
+    "material_write_plan": "material_write_plan.json",
+    "validator_report": "validator_report.json",
+    "postwrite_report": "postwrite_report.json",
+    "blocker_report": "blocker_report.json",
+    "decision_trace": "decision_trace.json"
+  },
+  "forbidden_payloads_excluded": [
+    "draft_content.json",
+    "template-2.tmp"
+  ],
+  "media_excluded": true,
+  "runtime_large_json_excluded": true
+}

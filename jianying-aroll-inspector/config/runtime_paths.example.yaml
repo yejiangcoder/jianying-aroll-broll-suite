@@ -1,28 +1,28 @@
-runtime_root: "D:/auto_clip_runtime"
+runtime_root: "${HOME}/.auto_clip_runtime"
 
 aroll:
-  runs_dir: "D:/auto_clip_runtime/arll/runs"
-  reports_dir: "D:/auto_clip_runtime/arll/reports"
-  backups_dir: "D:/auto_clip_runtime/arll/backups"
+  runs_dir: "${HOME}/.auto_clip_runtime/arll/runs"
+  reports_dir: "${HOME}/.auto_clip_runtime/arll/reports"
+  backups_dir: "${HOME}/.auto_clip_runtime/arll/backups"
 
 broll:
-  design_runs_dir: "D:/auto_clip_runtime/broll/design_runs"
-  material_index_dir: "D:/auto_clip_runtime/broll/material_index"
-  downloaded_materials_dir: "D:/auto_clip_runtime/broll/downloaded_materials"
+  design_runs_dir: "${HOME}/.auto_clip_runtime/broll/design_runs"
+  material_index_dir: "${HOME}/.auto_clip_runtime/broll/material_index"
+  downloaded_materials_dir: "${HOME}/.auto_clip_runtime/broll/downloaded_materials"
 
 ai_images:
-  batches_dir: "D:/auto_clip_runtime/ai_images/batches"
-  manifests_dir: "D:/auto_clip_runtime/ai_images/manifests"
+  batches_dir: "${HOME}/.auto_clip_runtime/ai_images/batches"
+  manifests_dir: "${HOME}/.auto_clip_runtime/ai_images/manifests"
 
 drafts:
-  real_drafts_dir: "D:/auto_clip_runtime/drafts/real_drafts"
-  draft_backups_dir: "D:/auto_clip_runtime/drafts/draft_backups"
+  real_drafts_dir: "${HOME}/.auto_clip_runtime/drafts/real_drafts"
+  draft_backups_dir: "${HOME}/.auto_clip_runtime/drafts/draft_backups"
 
-exports_dir: "D:/auto_clip_runtime/exports"
-logs_dir: "D:/auto_clip_runtime/logs"
-temp_dir: "D:/auto_clip_runtime/temp"
-cache_dir: "D:/auto_clip_runtime/cache"
+exports_dir: "${HOME}/.auto_clip_runtime/exports"
+logs_dir: "${HOME}/.auto_clip_runtime/logs"
+temp_dir: "${HOME}/.auto_clip_runtime/temp"
+cache_dir: "${HOME}/.auto_clip_runtime/cache"
 
 packages:
-  release_dir: "D:/auto_clip_runtime/packages/release"
-  dev_snapshot_dir: "D:/auto_clip_runtime/packages/dev_snapshot"
+  release_dir: "${HOME}/.auto_clip_runtime/packages/release"
+  dev_snapshot_dir: "${HOME}/.auto_clip_runtime/packages/dev_snapshot"

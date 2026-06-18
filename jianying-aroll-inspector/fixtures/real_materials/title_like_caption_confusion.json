@@ -1,0 +1,45 @@
+{
+  "fixture_origin": "synthetic_realistic",
+  "materials": [
+    {
+      "id": "confusing_title_001",
+      "role": "title_caption_style",
+      "type": "text",
+      "name": "caption looking title",
+      "font_size": 160,
+      "scale": {
+        "x": 4.0,
+        "y": 4.0
+      },
+      "content": "{\"text\":\"像字幕的标题\",\"styles\":[{\"range\":{\"start\":0,\"end\":6},\"font_size\":160}]}"
+    },
+    {
+      "id": "real_caption_001",
+      "role": "caption",
+      "type": "text",
+      "font_size": 42,
+      "content": "{\"text\":\"正常字幕\",\"styles\":[{\"range\":{\"start\":0,\"end\":4},\"font_size\":42,\"fill\":{\"color\":\"#FFFFFF\"}}]}",
+      "base_content": "{\"text\":\"正常字幕\",\"styles\":[{\"range\":{\"start\":0,\"end\":4},\"font_size\":42,\"fill\":{\"color\":\"#FFFFFF\"}}]}"
+    }
+  ],
+  "segments": [
+    {
+      "id": "confusing_title_segment_001",
+      "type": "title",
+      "material_id": "confusing_title_001",
+      "target_timerange": {
+        "start": 0,
+        "duration": 1000000
+      }
+    },
+    {
+      "id": "real_caption_segment_001",
+      "type": "text",
+      "material_id": "real_caption_001",
+      "target_timerange": {
+        "start": 0,
+        "duration": 1000000
+      }
+    }
+  ]
+}

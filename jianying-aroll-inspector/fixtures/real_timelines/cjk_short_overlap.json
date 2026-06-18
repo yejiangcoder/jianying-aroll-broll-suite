@@ -1,0 +1,46 @@
+{
+  "source_segments": [
+    {
+      "id": "clip_cjk_overlap",
+      "material_id": "main_video_a",
+      "source_start_us": 0,
+      "source_end_us": 3000000
+    }
+  ],
+  "word_timeline": [
+    {
+      "word_id": "w001",
+      "word_text": "最后只",
+      "start_us": 100000,
+      "end_us": 400000,
+      "subtitle_index": 1,
+      "subtitle_uid": "s001"
+    },
+    {
+      "word_id": "w002",
+      "word_text": "最后只能像一个小丑",
+      "start_us": 450000,
+      "end_us": 1200000,
+      "subtitle_index": 2,
+      "subtitle_uid": "s002"
+    }
+  ],
+  "subtitles": [
+    {
+      "subtitle_uid": "s001",
+      "subtitle_index": 1,
+      "text": "最后只",
+      "word_ids": [
+        "w001"
+      ]
+    },
+    {
+      "subtitle_uid": "s002",
+      "subtitle_index": 2,
+      "text": "最后只能像一个小丑",
+      "word_ids": [
+        "w002"
+      ]
+    }
+  ]
+}

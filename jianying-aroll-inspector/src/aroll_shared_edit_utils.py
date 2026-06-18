@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 from copy import deepcopy
 from pathlib import Path
@@ -7,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from aroll_inspect import build_report as inspect_build_report
+from aroll_subtitle_style_integrity_gate import is_safe_subtitle_style
 from jy_bridge import read_json
 
 
@@ -56,16 +58,33 @@ def run_post_inspect(draft_dir: Path, run_dir: Path, jy_draftc: Path) -> dict[st
     }
 
 
+def _replace_json_payload_text(value: Any, text: str) -> Any:
+    if isinstance(value, str):
+        try:
+            payload = json.loads(value)
+        except json.JSONDecodeError:
+            return value
+        if isinstance(payload, dict):
+            payload["text"] = text
+            return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        return value
+    if isinstance(value, dict):
+        payload = deepcopy(value)
+        payload["text"] = text
+        return payload
+    return value
+
+
 def set_json_text_payload(obj: Any, text: str) -> None:
-    if isinstance(obj, dict):
-        for key, value in list(obj.items()):
-            if key in {"text", "recognize_text", "content"} and isinstance(value, str):
-                obj[key] = text
-            else:
-                set_json_text_payload(value, text)
-    elif isinstance(obj, list):
-        for item in obj:
-            set_json_text_payload(item, text)
+    """Update a text material root without rewriting nested style content."""
+    if not isinstance(obj, dict):
+        return
+    for key in ("text", "recognize_text"):
+        if isinstance(obj.get(key), str):
+            obj[key] = text
+    for key in ("content", "base_content"):
+        if key in obj:
+            obj[key] = _replace_json_payload_text(obj.get(key), text)
 
 
 def clone_text_material(material: dict[str, Any], new_id: str, text: str) -> dict[str, Any]:
@@ -82,12 +101,23 @@ def material_text_rows(
     display_plan: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     material_by_id: dict[str, dict[str, Any]] = {}
+    source_by_uid: dict[str, dict[str, Any]] = {}
+    source_by_material_id: dict[str, dict[str, Any]] = {}
+    safe_sources: list[dict[str, Any]] = []
     for row in source_subtitles:
         material = row.get("material") or {}
         material_id = str(row.get("text_material_id") or material.get("id") or "")
         if material_id:
             material_by_id[material_id] = material
-    fallback_material = next(iter(material_by_id.values()), {})
+            source_by_material_id[material_id] = row
+        subtitle_uid = str(row.get("subtitle_uid") or "")
+        if subtitle_uid:
+            source_by_uid[subtitle_uid] = row
+        if is_safe_subtitle_style(material, row.get("segment") or {}):
+            safe_sources.append(row)
+    fallback_source = safe_sources[0] if safe_sources else (source_subtitles[0] if source_subtitles else {})
+    fallback_material = fallback_source.get("material") or next(iter(material_by_id.values()), {})
+    fallback_segment = fallback_source.get("segment") or {}
     materials = data.setdefault("materials", {})
     text_materials = materials.setdefault("texts", [])
     old_ids = {str(row.get("id") or "") for row in text_materials}
@@ -96,24 +126,20 @@ def material_text_rows(
     for index, item in enumerate(display_plan, start=1):
         text = str(item.get("fragment_text") or item.get("text") or "")
         source_ids = [str(sid) for sid in (item.get("source_subtitle_uids") or [])]
-        source_material_id = ""
-        for source in source_subtitles:
-            if str(source.get("subtitle_uid") or "") in source_ids:
-                source_material_id = str(source.get("text_material_id") or "")
+        selected_source = fallback_source
+        for source_id in source_ids:
+            candidate = source_by_uid.get(source_id) or {}
+            if candidate and is_safe_subtitle_style(candidate.get("material") or {}, candidate.get("segment") or {}):
+                selected_source = candidate
                 break
+        source_material_id = str(selected_source.get("text_material_id") or (selected_source.get("material") or {}).get("id") or "")
         material = material_by_id.get(source_material_id) or fallback_material
         new_material_id = f"aroll_text_{index:06d}"
         while new_material_id in old_ids:
             new_material_id = f"aroll_text_{index:06d}_{len(old_ids)}"
         old_ids.add(new_material_id)
         text_materials.append(clone_text_material(material, new_material_id, text))
-        source_segment = None
-        for source in source_subtitles:
-            if str(source.get("text_material_id") or "") == source_material_id:
-                source_segment = source.get("segment")
-                break
-        if not source_segment:
-            source_segment = (source_subtitles[0].get("segment") or {}) if source_subtitles else {}
+        source_segment = (source_by_material_id.get(source_material_id) or {}).get("segment") or fallback_segment
         segment = deepcopy(source_segment)
         segment["id"] = f"aroll_text_segment_{index:06d}"
         segment["material_id"] = new_material_id

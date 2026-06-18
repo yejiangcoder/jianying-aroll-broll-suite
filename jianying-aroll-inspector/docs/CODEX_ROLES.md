@@ -2,7 +2,7 @@
 
 ## IDEA Codex
 
-Use IDEA Codex for small code edits, review comments, tests, and narrow refactors.
+Use IDEA Codex for small code edits, review comments, lightweight gates, tests, and narrow refactors.
 
 Do not use IDEA Codex for:
 
@@ -10,6 +10,7 @@ Do not use IDEA Codex for:
 - opening large draft JSON dumps
 - running UAT
 - writing real drafts
+- calling writeback tools against real Jianying drafts
 - batch image generation
 - packaging large artifacts
 
@@ -21,6 +22,7 @@ Use Desktop Codex for:
 - runtime cleanup
 - release and dev snapshot packaging
 - UAT
+- real Jianying writeback
 - long-running local tool execution
 - AI image batch scripts
 - report generation

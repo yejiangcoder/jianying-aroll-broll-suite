@@ -8,6 +8,8 @@ __pycache__/
 .env.*
 !/.env.example
 config/runtime_paths.local.yaml
+config/deepseek.local.yaml
+.idea/
 
 # runtime and generated outputs
 runtime/
@@ -17,7 +19,9 @@ logs/
 exports/
 temp/
 cache/
-reports/
+reports/*
+!reports/*.md
+!reports/*.json
 audio_vad/
 post_inspect_runtime/
 baseline_backup/

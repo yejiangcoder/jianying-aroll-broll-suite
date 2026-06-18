@@ -1,131 +1,185 @@
 # Jianying AI Image Aligner
 
-用途：给 agent 使用，把 B-ROLL 设计稿里的 AI 静态图直接写进剪映 10.7 prepared 草稿，生成独立图片片段轨道 `AI_BROLL`。
+用途：把已 QC 通过的 AI 静态图按 `visual_slot_plan.json` 写进当前剪映草稿的独立 `AI_BROLL` 图片轨道。
 
-## 当前锁定路线
+## Current Route
 
-只走草稿级自动化：
+只使用直接草稿写入路线：
 
-1. 用 `jy-draftc` 调用剪映安装目录里的 `videoeditor.dll` 解密当前 prepared 草稿主体 `draft_content.json`。
-2. 从明文 `draft_content` 的最终字幕 text track 读取 `subtitle_text / start_sec / end_sec`。
-3. 解析 B-ROLL 设计稿里的 `AI静态图`：编号、台词落点、画面设计。
-4. 用 `台词落点` 语义匹配最终字幕文本，生成 `broll_exec_plan`。
-5. 新建或复用 `AI_BROLL` 图片轨道。
-6. 把 AI 静态图按字幕起点写入草稿，数量以 B-ROLL 设计稿和规范图片目录为准，每张固定 `1.3s`。
-7. 回加密并覆盖当前工程草稿主体。
-8. 重新解密当前草稿自检。
+1. `src/direct_draft_broll_writer.py`
+2. `src/pipeline_contract_check.py`
+3. `src/create_test_visual_slot_package.py`
+4. `run_direct_draft_write.ps1`
+5. `run_pipeline_contract_check.ps1`
+6. `run_create_test_visual_slot_package.ps1`
+7. `run_negative_tests.ps1`
+8. `run_preproduction_check.ps1`
 
-## 禁止路线
+旧 UI / 拖拽 / 固定 1.3s / overlay 对齐路线已经从代码库移除，不再提供兼容入口。后续图片对齐只能走 v0.2 direct draft-write route。
 
-- 不做 UI 拖拽。
-- 不截图识别字幕块。
-- 不导出 SRT。
-- 不做轨道坐标校准。
-- 不生成 MP4 覆盖视频。
-- 不处理现实素材。
-- 不创建辅助草稿复制轨道。
+必须显式传入当前项目的：
 
-## 输入契约
+- `DraftDir`
+- `BrollMd`
+- `ImageDir`
+- `VisualSlotPlan`
 
-配置文件：
+`jy-draftc` 从 `JY_DRAFTC_EXE` / `JY_DRAFTC` 读取，或通过 `-JyDraftc` / `--jy-draftc` 显式传入。仓库不再提供硬编码 vendor 默认值。
 
-`D:\video tools\jianying-ai-image-aligner\agent_inputs.json`
+## Pipeline Stage
 
-关键字段：
-
-- `draft_dir`：当前剪映工程目录。
-- `broll_md`：B-ROLL 设计稿。
-- `ai_image_dir`：AI 静态图目录。
-- `duration_sec`：固定 `1.3`。
-
-AI 图片只识别规范命名：
+图片对齐是流水线第 4 阶段：
 
 ```text
-项目名_AI_02_画面短名.png
-项目名_AI_100_画面短名.png
+A-Roll 通过 QC -> B-Roll 设计稿通过 QC -> AI 批量跑图通过 QC -> 图片对齐写入 -> GUI QC
 ```
 
-文件名必须包含 `_AI_编号_`。目录里的 `ChatGPT Image ...png` 这类原始文件不会进入施工计划。
+写入前仍有确认门槛：没有 `-ConfirmWrite` / `--confirm-write` 时，只生成 preflight 确认单，不写草稿。
 
-## B-ROLL 设计稿要求
+## visual_slot_plan
 
-每张 `AI静态图` 必须至少有：
+本阶段不再猜字幕轨，也不重新做语义对齐。时间轴来源只能是上游输出的 `visual_slot_plan.json`。
 
-- 编号，例如 `02`
-- `B-roll类型 = AI静态图`
-- `台词落点`
-- `对齐台词起句`；当 `台词落点` 是画面意图、概括句或改写句，而不是字幕原句时必须写。
-- `画面设计` 或 AI 清单里的 `画面方向`
-- AI 静态图清单里的 `【编号】`
+```json
+{
+  "slots": [
+    {
+      "slot_id": "broll_001",
+      "text": "对应台词",
+      "target_start_us": 1230000,
+      "target_end_us": 3450000,
+      "source_start_us": 900000,
+      "source_end_us": 3120000,
+      "container_video_segment_ids": ["..."],
+      "image_path": "<path-to>\\image_AI_01_scene.png"
+    }
+  ]
+}
+```
 
-`台词落点` 就是自动对齐的 `target_text`。  
-`台词落点` 和 `对齐台词起句` 会用于匹配最终字幕。匹配置信度低于阈值时工具会停止，不会硬写入。
+写入规则：
 
-## 命令
+- 图片 `target_start` 使用 `target_start_us`。
+- 图片 `target_duration` 使用 `target_end_us - target_start_us`。
+- 禁止固定 `1.3s` 默认。
+- slot 不能跨 video target gap。
+- slot 不能超过 `container_video_segment_ids` 对应的实际 video 区间。
 
-直接写当前剪映草稿：
+## Contract
+
+- AI 图片文件名必须包含 `_AI_<number>_`。
+- B-roll 表格 ID、AI 静态图清单 ID、规范图片目录 ID、visual slot 图片 ID 必须完全一致。
+- 图片对齐工具不主观创作 B-Roll 设计；正式流程消费 B-Roll agent 产物，测试包也必须传真实设计稿作为结构参考。
+- 如果 slot plan 携带 confidence，低于阈值会停止执行。
+- 写入轨道名固定为 `AI_BROLL`。
+- 写入前会移除旧 `AI_BROLL`，再写入新的 slot 集合。
+
+## Commands
+
+Create an isolated 10-image test package from a real draft and AI image directory：
 
 ```powershell
-& "C:\Users\Administrator\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" "D:\video tools\jianying-ai-image-aligner\src\direct_draft_broll_writer.py"
+.\run_create_test_visual_slot_package.ps1 `
+  -DraftDir "<path-to-jianying-draft>" `
+  -SourceImageDir "<path-to-ai-images>" `
+  -ReferenceBroll "<path-to>\真实B-roll设计.md" `
+  -Count 10
 ```
 
-三位一体自检：
+The generated package contains:
+
+- `test_ai_images\`
+- `broll_test_design.md`
+- `visual_slot_plan.json`
+- `test_package_manifest.json`
+
+Preflight：
 
 ```powershell
-& "C:\Users\Administrator\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" "D:\video tools\jianying-ai-image-aligner\src\pipeline_contract_check.py"
+.\run_direct_draft_write.ps1 `
+  -DraftDir "<path-to-jianying-draft>" `
+  -BrollMd "<path-to>\broll.md" `
+  -ImageDir "<path-to>\images" `
+  -VisualSlotPlan "<path-to>\visual_slot_plan.json"
 ```
 
-## 输出
+Write after AI image QC：
 
-每次写入会生成：
+```powershell
+.\run_direct_draft_write.ps1 `
+  -DraftDir "<path-to-jianying-draft>" `
+  -BrollMd "<path-to>\broll.md" `
+  -ImageDir "<path-to>\images" `
+  -VisualSlotPlan "<path-to>\visual_slot_plan.json" `
+  -ConfirmWrite
+```
+
+Post-write contract check：
+
+```powershell
+.\run_pipeline_contract_check.ps1 `
+  -DraftDir "<path-to-jianying-draft>" `
+  -BrollMd "<path-to>\broll.md" `
+  -ImageDir "<path-to>\images" `
+  -VisualSlotPlan "<path-to>\visual_slot_plan.json"
+```
+
+Negative contract sweep：
+
+```powershell
+.\run_negative_tests.ps1 `
+  -BrollMd "<path-to>\broll.md" `
+  -ImageDir "<path-to>\images" `
+  -VisualSlotPlan "<path-to>\visual_slot_plan.json"
+```
+
+This sweep must pass before treating the tool as production-ready for a new draft class. It uses disposable mutated packages and a disposable draft clone for rollback verification.
+
+Preproduction check：
+
+```powershell
+.\run_preproduction_check.ps1 `
+  -BrollMd "<path-to>\broll.md" `
+  -ImageDir "<path-to>\images" `
+  -VisualSlotPlan "<path-to>\visual_slot_plan.json"
+```
+
+This is the final gate before a real `-ConfirmWrite`: it runs preflight-only input validation and the negative sweep. It does not write the active draft. Post-write actual contract check runs after `-ConfirmWrite`.
+
+## Audit Gate
+
+Post-write audit must pass before GUI QC:
+
+- `image_slot_count == written_image_segment_count`
+- 每个 image segment start/end/duration 精确匹配 slot
+- 每个 image segment source duration 匹配 slot duration，允许剪映重新打开后的 `1us` source-only 量化误差
+- image 不超过 containing video segment
+- image 不跨 video target gap
+- 无旧 `AI_BROLL` residue
+- 无 image after final video end
+- `only_specified_draft_written = true`
+- root/timeline mirror consistent
+- `post_write_actual_image_audit_gate_passed = true`
+
+## Negative Gates
+
+- missing image blocks
+- extra image blocks
+- B-roll table IDs and AI static-list IDs mismatch blocks
+- visual slot image IDs and image directory mismatch blocks
+- slot overlap blocks
+- slot outside containing video segment blocks
+- slot crossing video target gap blocks
+- missing current draft binding blocks
+- current draft state with A-Roll QC not passed blocks
+- forced post-write audit failure restores the disposable draft clone hash
+
+## Runtime
+
+运行输出在外部 runtime：
 
 ```text
-D:\auto_clip_runtime\image_aligner\runs\direct_write_时间戳\
+<runtime-root>\image_aligner\runs
 ```
 
-包含：
-
-- `draft_content.dec.json`
-- `draft_content.modified.json`
-- `draft_content.encrypted.json`
-- `broll_exec_plan.csv`
-- `verify_after_write.dec.json`，自检时生成
-
-## 成功标准
-
-- `AI_BROLL` 轨道存在。
-- B-ROLL 设计稿、AI 静态图清单、规范图片目录的编号完全一致。
-- 规范命名的 AI 静态图全部写入。
-- 每张图片时长都是 `1.3s`。
-- 图片路径指向项目原始 AI 静态图目录。
-- AI 轨道在滤镜轨上方、字幕轨下方。
-- 同一轨道无重叠。
-
-## Version Boundary
-
-Current v0.1:
-
-- fixed `1.3s` image duration
-- aligns each image to the matched subtitle start
-- writes the independent `AI_BROLL` image track
-
-Planned v0.2:
-
-- reads `visual_slot_plan.json`
-- aligns each image from `start_us` to `end_us`
-- uses `duration_us` from the slot interval
-- no fixed `1.3s` default
-- still writes the independent `AI_BROLL` image track
-
-v0.2 is not implemented yet. Desktop Codex must not assume `visual_slot_plan` execution works until IDEA Codex implements it.
-
-`agent_inputs.json` may contain local project paths.
-For portable usage, create `agent_inputs.example.json` and keep local paths out of OSS export.
-
-## Open Source Export Notice
-
-This repository contains source code only.
-
-Runtime artifacts, Jianying drafts, media files, generated images, local configs, cookies, and API keys are not included.
-
-Configure local runtime paths with environment variables or example config files.
+`agent_inputs.example.json` 只作为文档示例。真实本地路径请放在命令参数或本机私有配置中，`agent_inputs.json` 已加入 `.gitignore`。

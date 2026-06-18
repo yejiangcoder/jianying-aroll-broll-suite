@@ -1,0 +1,22 @@
+{
+  "material": {
+    "id": "giant_title_001",
+    "role": "title",
+    "type": "text",
+    "font_size": 180,
+    "scale": {
+      "x": 5.0,
+      "y": 5.0
+    },
+    "content": "{\"text\":\"大标题\",\"styles\":[{\"range\":{\"start\":0,\"end\":3},\"font_size\":180}]}"
+  },
+  "segment": {
+    "id": "giant_title_segment_001",
+    "type": "title",
+    "material_id": "giant_title_001",
+    "target_timerange": {
+      "start": 0,
+      "duration": 1000000
+    }
+  }
+}

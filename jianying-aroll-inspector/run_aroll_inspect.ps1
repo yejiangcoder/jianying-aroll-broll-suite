@@ -4,14 +4,32 @@ param(
   [int]$MainVideoTrackIndex = -1,
   [string]$MainMaterialPath = "",
   [double]$MaxAllowedSpeed = 1.25,
-  [string]$InputJson = "D:\video tools\jianying-ai-image-aligner\agent_inputs.json"
+  [string]$Runtime = "",
+  [string]$InputJson = ""
 )
 
 $ErrorActionPreference = "Stop"
 
+function Resolve-Python {
+  foreach ($Candidate in @($env:PYTHON, $env:PYTHON_EXE)) {
+    if ([string]::IsNullOrWhiteSpace($Candidate)) { continue }
+    if (Test-Path -LiteralPath $Candidate) { return $Candidate }
+    $Command = Get-Command $Candidate -ErrorAction SilentlyContinue
+    if ($Command) { return $Command.Source }
+    throw "Python 解释器不存在：$Candidate"
+  }
+  $Command = Get-Command python -ErrorAction SilentlyContinue
+  if ($Command) { return $Command.Source }
+  throw "Python 不存在：请设置 PYTHON 或 PYTHON_EXE，或将 python 加入 PATH。"
+}
+
 if ([string]::IsNullOrWhiteSpace($DraftDir)) {
-  if (Test-Path -LiteralPath $InputJson) {
-    $Config = Get-Content -LiteralPath $InputJson -Raw | ConvertFrom-Json
+  $ResolvedInputJson = $InputJson
+  if ([string]::IsNullOrWhiteSpace($ResolvedInputJson) -and -not [string]::IsNullOrWhiteSpace($env:JY_ALIGNER_ROOT)) {
+    $ResolvedInputJson = Join-Path $env:JY_ALIGNER_ROOT "agent_inputs.json"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ResolvedInputJson) -and (Test-Path -LiteralPath $ResolvedInputJson)) {
+    $Config = Get-Content -LiteralPath $ResolvedInputJson -Raw | ConvertFrom-Json
     if ($Config.draft_dir) {
       $DraftDir = [string]$Config.draft_dir
     }
@@ -20,7 +38,7 @@ if ([string]::IsNullOrWhiteSpace($DraftDir)) {
         $TimelineName = [string]$Config.timeline_name
       }
     }
-    Write-Host "USING_AGENT_INPUTS=$InputJson"
+    Write-Host "USING_AGENT_INPUTS=$ResolvedInputJson"
   }
 }
 
@@ -40,10 +58,7 @@ Write-Host "CONFIRM_MAIN_VIDEO_TRACK_INDEX=$MainVideoTrackIndex"
 Write-Host "CONFIRM_MAIN_MATERIAL_PATH=$MainMaterialPath"
 Write-Host "MODE=READ_ONLY_INSPECT"
 
-$Python = "C:\Users\Administrator\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
-if (!(Test-Path -LiteralPath $Python)) {
-  $Python = "python"
-}
+$Python = Resolve-Python
 
 $ArgsList = @(
   (Join-Path $PSScriptRoot "src\aroll_inspect.py"),
@@ -53,5 +68,6 @@ $ArgsList = @(
   "--main-material-path", $MainMaterialPath,
   "--max-allowed-speed", "$MaxAllowedSpeed"
 )
+if (-not [string]::IsNullOrWhiteSpace($Runtime)) { $ArgsList += @("--runtime", $Runtime) }
 
 & $Python @ArgsList

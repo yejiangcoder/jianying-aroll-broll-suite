@@ -1,0 +1,31 @@
+{
+  "source_segments": [
+    {
+      "id": "clip_rebase",
+      "material_id": "main_video_a",
+      "source_start_us": 1000000,
+      "source_end_us": 3000000,
+      "target_start_us": 0
+    }
+  ],
+  "word_timeline": [
+    {
+      "word_id": "w001",
+      "word_text": "重映射",
+      "start_us": 1200000,
+      "end_us": 1500000,
+      "subtitle_index": 1,
+      "subtitle_uid": "s001"
+    }
+  ],
+  "subtitles": [
+    {
+      "subtitle_uid": "s001",
+      "subtitle_index": 1,
+      "text": "重映射",
+      "word_ids": [
+        "w001"
+      ]
+    }
+  ]
+}

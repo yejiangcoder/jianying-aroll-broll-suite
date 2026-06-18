@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -9,7 +10,7 @@ from typing import Any
 
 
 TOOL_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RUNTIME_ROOT = Path("D:/auto_clip_runtime")
+DEFAULT_RUNTIME_ROOT = Path(os.environ.get("AUTO_CLIP_RUNTIME_DIR") or (Path.home() / ".auto_clip_runtime"))
 
 MOVE_DIR_MAP = {
     "runtime": ("arll", "runs"),
@@ -34,7 +35,6 @@ KEEP_ROOT_FILES = {
     "AGENTS.md",
     "README.md",
     "README_UAT.md",
-    "aroll_operator_profile.json",
 }
 IGNORE_DIR_NAMES = {"__pycache__", ".pytest_cache"}
 IGNORE_SUFFIXES = {".pyc", ".pyo"}
@@ -356,7 +356,7 @@ def write_layering_report(path_md: Path, path_json: Path, scan: dict[str, Any], 
             "Do not move real Jianying drafts.",
             "If moved output is wrong, copy back from external runtime path to original project path.",
         ],
-        "idea_setup": "Open only D:/video tools/jianying-aroll-inspector. Exclude runtime/release/dev_snapshot. Do not add D:/auto_clip_runtime as content root.",
+        "idea_setup": "Open only the source checkout. Exclude runtime/release/dev_snapshot. Do not add the external runtime root as a content root.",
         "roles": {
             "idea_codex": "precise code edits only; no runtime scan; no real draft writes",
             "desktop_codex": "migration, long tasks, UAT, package generation, reports; default dry-run",

@@ -6,23 +6,31 @@ import difflib
 import hashlib
 import json
 import re
-import subprocess
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
+from draft_runtime_binding import (
+    DraftRuntimeBinding,
+    assert_all_project_timeline_files_match_folder_ids,
+    assert_layout_has_no_duplicate_timeline_ids,
+    assert_timeline_content_id,
+    decrypt,
+    encrypt,
+    read_json,
+    sha256,
+    write_json,
+)
 from runtime_paths import get_runs_dir
 
 
 SEC = 1_000_000
-DEFAULT_JY_DRAFTC = Path(
-    r"D:\video tools\jianying-ai-image-aligner\vendor\jy-draftc-bin\jy-draftc-amd64-windows\jy-draftc.exe"
-)
+DEFAULT_JY_DRAFTC = None
 DEFAULT_RUNTIME = get_runs_dir()
-PHOTO_DURATION_US = 1_300_000
 AI_TRACK_NAME = "AI_BROLL"
 MIN_MATCH_CONFIDENCE = 0.45
+SOURCE_DURATION_TOLERANCE_US = 1
 
 
 def guid() -> str:
@@ -53,14 +61,6 @@ def parse_id_list(value: str) -> set[str]:
         if image_id:
             ids.add(image_id)
     return ids
-
-
-def read_json(path: Path) -> Any:
-    return json.loads(path.read_text("utf-8"))
-
-
-def write_json(path: Path, data: Any) -> None:
-    path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), "utf-8")
 
 
 def clean_text(text: str) -> str:
@@ -250,123 +250,259 @@ def parse_broll_items(broll_path: Path, image_dir: Path) -> list[dict[str, Any]]
     return items
 
 
-def active_timeline_id(draft_dir: Path) -> str:
-    layout = read_json(draft_dir / "timeline_layout.json")
-    return layout["activeTimeline"]
+def unnormalized_png_files(image_dir: Path) -> list[Path]:
+    return [path for path in sorted(image_dir.glob("*.png")) if not image_id_from_filename(path)]
 
 
-def resolve_timeline_id(draft_dir: Path, timeline_name: str = "") -> tuple[str, str]:
-    layout = read_json(draft_dir / "timeline_layout.json")
-    expected = clean_text(timeline_name)
-    if not expected:
-        return layout["activeTimeline"], "activeTimeline"
-    aliases = {expected}
-    if re.search(r"\d+$", expected):
-        prefix = re.sub(r"\d+$", "", expected)
-        number = int(re.search(r"\d+$", expected).group(0))
-        aliases.add(f"{prefix}{number:02d}")
-        aliases.add(f"{prefix}{number}")
-    for dock in layout.get("dockItems", []):
-        for timeline_id, name in zip(dock.get("timelineIds", []), dock.get("timelineNames", [])):
-            if clean_text(name) in aliases:
-                return timeline_id, clean_text(name)
-    available = []
-    for dock in layout.get("dockItems", []):
-        available.extend(clean_text(name) for name in dock.get("timelineNames", []))
-    raise RuntimeError(f"未找到指定草稿范围：{timeline_name}；可用范围：{available}")
+def validate_broll_image_contract(broll_path: Path, image_dir: Path) -> tuple[list[str], dict[str, Path]]:
+    image_files = normalized_image_files(image_dir)
+    image_ids = list(image_files.keys())
+    invalid_images = unnormalized_png_files(image_dir)
+    if invalid_images:
+        names = [path.name for path in invalid_images]
+        raise RuntimeError(f"AI 图片目录存在不规范 PNG 文件名，必须包含 _AI_<number>_：{names}")
+    if not image_ids:
+        raise RuntimeError(f"AI 图片目录没有规范命名图片：{image_dir}")
+    table_ids = broll_table_ai_ids(broll_path)
+    static_list_ids = broll_static_list_ids(broll_path)
+    if not table_ids:
+        raise RuntimeError("B-roll 设计稿没有可校验的 AI静态图表格编号")
+    if not static_list_ids:
+        raise RuntimeError("B-roll 设计稿没有可校验的 AI 静态图清单编号")
+    if table_ids != image_ids:
+        raise RuntimeError(f"B-roll 表格 AI 编号与图片目录不一致：table={table_ids}, images={image_ids}")
+    if static_list_ids != image_ids:
+        raise RuntimeError(f"AI 静态图清单编号与图片目录不一致：static_list={static_list_ids}, images={image_ids}")
+    parsed_ids = [item["image_id"] for item in parse_broll_items(broll_path, image_dir)]
+    if parsed_ids != image_ids:
+        raise RuntimeError(f"B-roll 解析 AI 编号与图片目录不一致：parsed={parsed_ids}, images={image_ids}")
+    return image_ids, image_files
 
 
-def decrypt(jy_draftc: Path, encrypted: Path, output: Path) -> None:
-    output.parent.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(
-        [str(jy_draftc), "-d", str(encrypted), str(output)],
-        cwd=str(jy_draftc.parent),
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stdout)
+def visual_slot_rows(raw: Any) -> list[dict[str, Any]]:
+    if isinstance(raw, list):
+        rows = raw
+    elif isinstance(raw, dict):
+        rows = []
+        for key in ("slots", "visual_slots", "image_slots"):
+            if isinstance(raw.get(key), list):
+                rows = raw[key]
+                break
+    else:
+        rows = []
+    if not rows:
+        raise RuntimeError("visual_slot_plan.json 缺少 slots 列表")
+    if not all(isinstance(row, dict) for row in rows):
+        raise RuntimeError("visual_slot_plan.json 的 slots 必须是对象列表")
+    return rows
 
 
-def encrypt(jy_draftc: Path, plain: Path, encrypted: Path) -> None:
-    result = subprocess.run(
-        [str(jy_draftc), "-e", str(plain), str(encrypted)],
-        cwd=str(jy_draftc.parent),
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stdout)
+def int_field(row: dict[str, Any], *names: str, required: bool = True) -> int:
+    for name in names:
+        value = row.get(name)
+        if value is None or value == "":
+            continue
+        return int(value)
+    if required:
+        raise RuntimeError(f"slot 缺少字段：{'/'.join(names)}")
+    return 0
 
 
-def assert_timeline_content_id(data: dict[str, Any], expected_timeline_id: str, source: Path) -> None:
-    actual = str(data.get("id") or "")
-    if actual != expected_timeline_id:
+def resolve_slot_image_path(
+    row: dict[str, Any],
+    image_files: dict[str, Path],
+    image_dir: Path,
+    plan_dir: Path,
+) -> tuple[str, Path]:
+    raw_path = str(row.get("image_path") or "").strip()
+    raw_id = str(row.get("image_id") or row.get("slot_id") or "").strip()
+    path_image_id = image_id_from_filename(Path(raw_path)) if raw_path else ""
+    declared_image_id = normalize_image_id(raw_id)
+    if declared_image_id and path_image_id and declared_image_id != path_image_id:
         raise RuntimeError(
-            "草稿时间线 ID 不一致，停止写入："
-            f"source={source}, expected={expected_timeline_id}, actual={actual}"
+            "slot image_id 与 image_path 文件名编号不一致："
+            f"slot={row.get('slot_id')} image_id={declared_image_id} image_path_id={path_image_id}"
         )
+    image_id = path_image_id or declared_image_id
+    if image_id not in image_files:
+        raise RuntimeError(f"slot 图片编号不在规范图片目录中：slot={row.get('slot_id')} image_id={image_id}")
+    expected_path = image_files[image_id]
+    if not raw_path:
+        return image_id, expected_path
+    candidate = Path(raw_path)
+    candidates = [candidate]
+    if not candidate.is_absolute():
+        candidates = [plan_dir / candidate, image_dir / candidate]
+    existing = next((path for path in candidates if path.exists()), None)
+    if not existing:
+        raise FileNotFoundError(f"slot image_path 不存在：slot={row.get('slot_id')} image_path={raw_path}")
+    if existing.resolve() != expected_path.resolve():
+        raise RuntimeError(
+            "slot image_path 与当前 ImageDir 的规范图片不一致："
+            f"slot={row.get('slot_id')} plan={existing} image_dir={expected_path}"
+        )
+    return image_id, expected_path
 
 
-def project_timeline_ids(draft_dir: Path) -> set[str]:
-    project_path = draft_dir / "Timelines" / "project.json"
-    if not project_path.exists():
-        return set()
-    data = read_json(project_path)
-    return {str(row.get("id") or "") for row in data.get("timelines", []) if row.get("id")}
+def load_visual_slot_plan(plan_path: Path, image_dir: Path, image_files: dict[str, Path]) -> list[dict[str, Any]]:
+    raw = read_json(plan_path)
+    rows = visual_slot_rows(raw)
+    slots = []
+    seen_slot_ids: set[str] = set()
+    for index, row in enumerate(rows, start=1):
+        slot_id = clean_text(str(row.get("slot_id") or f"broll_{index:03d}"))
+        if slot_id in seen_slot_ids:
+            raise RuntimeError(f"visual_slot_plan slot_id 重复：{slot_id}")
+        seen_slot_ids.add(slot_id)
+        image_id, image_path = resolve_slot_image_path(row, image_files, image_dir, plan_path.parent)
+        target_start_us = int_field(row, "target_start_us", "start_us")
+        target_end_us = int_field(row, "target_end_us", "end_us", required=False)
+        duration_us = int_field(row, "duration_us", required=False)
+        if target_end_us <= 0 and duration_us > 0:
+            target_end_us = target_start_us + duration_us
+        if target_end_us <= target_start_us:
+            raise RuntimeError(f"slot 时间区间非法：slot={slot_id} start={target_start_us} end={target_end_us}")
+        source_start_us = int_field(row, "source_start_us", required=False)
+        source_end_us = int_field(row, "source_end_us", required=False)
+        if source_end_us and source_end_us < source_start_us:
+            raise RuntimeError(f"slot source 区间非法：slot={slot_id}")
+        container_ids = row.get("container_video_segment_ids") or row.get("container_segment_ids") or []
+        if isinstance(container_ids, str):
+            container_ids = [part.strip() for part in re.split(r"[,，\s]+", container_ids) if part.strip()]
+        if not isinstance(container_ids, list) or not container_ids:
+            raise RuntimeError(f"slot 缺少 container_video_segment_ids：slot={slot_id}")
+        slot = {
+            "slot_id": slot_id,
+            "image_id": image_id,
+            "image_path": image_path,
+            "image_name": clean_text(str(row.get("image_name") or image_path.stem)),
+            "text": clean_text(str(row.get("text") or row.get("target_text") or "")),
+            "target_text": clean_text(str(row.get("text") or row.get("target_text") or "")),
+            "start_us": target_start_us,
+            "end_us": target_end_us,
+            "duration_us": target_end_us - target_start_us,
+            "source_start_us": source_start_us,
+            "source_end_us": source_end_us,
+            "container_video_segment_ids": [str(value) for value in container_ids],
+            "match_method": "visual_slot_plan",
+            "confidence": row.get("confidence", row.get("match_confidence", "")),
+            "matched_window": row.get("matched_window", ""),
+            "window_size": row.get("window_size", ""),
+            "window_start_index": row.get("window_start_index", ""),
+            "window_end_index": row.get("window_end_index", ""),
+            "subtitle_index": row.get("subtitle_index", ""),
+            "subtitle_text": row.get("subtitle_text", row.get("text", "")),
+            "nudged_us": 0,
+        }
+        slot["start_sec"] = slot["start_us"] / SEC
+        slot["duration_sec"] = slot["duration_us"] / SEC
+        slots.append(slot)
+    slots.sort(key=lambda row: (int(row["start_us"]), image_id_sort_key(row["image_id"])))
+    return slots
 
 
-def layout_timeline_ids(draft_dir: Path) -> list[str]:
-    layout_path = draft_dir / "timeline_layout.json"
-    if not layout_path.exists():
-        return []
-    data = read_json(layout_path)
-    ids: list[str] = []
-    for dock in data.get("dockItems", []):
-        ids.extend(str(timeline_id) for timeline_id in dock.get("timelineIds", []) if timeline_id)
-    return ids
+def validate_slot_plan_ids(slots: list[dict[str, Any]], image_ids: list[str]) -> None:
+    slot_ids = [slot["image_id"] for slot in sorted(slots, key=lambda row: image_id_sort_key(row["image_id"]))]
+    if slot_ids != image_ids:
+        raise RuntimeError(f"visual_slot_plan 图片编号与 ImageDir 不一致：slots={slot_ids}, images={image_ids}")
+    if len(set(slot_ids)) != len(slot_ids):
+        raise RuntimeError(f"visual_slot_plan 图片编号重复：{slot_ids}")
 
 
-def assert_layout_has_no_duplicate_timeline_ids(draft_dir: Path) -> None:
-    ids = layout_timeline_ids(draft_dir)
-    duplicates = sorted({timeline_id for timeline_id in ids if ids.count(timeline_id) > 1})
-    if duplicates:
-        raise RuntimeError(f"timeline_layout.json 里存在重复时间线窗口，停止写入：{duplicates}")
+def validate_no_slot_overlaps(slots: list[dict[str, Any]]) -> None:
+    ordered = sorted(slots, key=lambda row: (int(row["start_us"]), int(row["end_us"])))
+    for left, right in zip(ordered, ordered[1:]):
+        if int(left["end_us"]) > int(right["start_us"]):
+            raise RuntimeError(
+                "visual_slot_plan 存在同轨重叠 slot："
+                f"{left['slot_id']}({left['start_us']}-{left['end_us']}) "
+                f"{right['slot_id']}({right['start_us']}-{right['end_us']})"
+            )
 
 
-def assert_all_project_timeline_files_match_folder_ids(
-    draft_dir: Path,
-    jy_draftc: Path,
-    out_dir: Path,
-) -> None:
-    project_ids = project_timeline_ids(draft_dir)
-    if not project_ids:
-        raise RuntimeError("Timelines/project.json 没有可用时间线 ID，停止写入")
-    timelines_dir = draft_dir / "Timelines"
-    for timeline_id in sorted(project_ids):
-        content_path = timelines_dir / timeline_id / "draft_content.json"
-        if not content_path.exists():
-            raise RuntimeError(f"项目索引中的时间线缺少 draft_content.json：{timeline_id}")
-        plain = out_dir / f"audit_{timeline_id}.dec.json"
-        decrypt(jy_draftc, content_path, plain)
-        data = read_json(plain)
-        assert_timeline_content_id(data, timeline_id, content_path)
+def validate_slot_confidence(slots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    low = []
+    for slot in slots:
+        value = slot.get("confidence")
+        if value is None or value == "":
+            continue
+        try:
+            if float(value) < MIN_MATCH_CONFIDENCE:
+                low.append(slot)
+        except (TypeError, ValueError):
+            raise RuntimeError(f"slot confidence 不是数字：slot={slot['slot_id']} confidence={value}")
+    if low:
+        ids = ",".join(slot["image_id"] for slot in low)
+        raise RuntimeError(f"visual_slot_plan 存在低置信字幕匹配，停止写入：{ids}")
+    return low
 
 
-def root_mirrors_timeline_id(draft_dir: Path, jy_draftc: Path, out_dir: Path, timeline_id: str) -> bool:
-    root_path = draft_dir / "draft_content.json"
-    if not root_path.exists():
+def draft_video_segments(data: dict[str, Any]) -> list[dict[str, Any]]:
+    videos = {m["id"]: m for m in data["materials"].get("videos", [])}
+    rows = []
+    for track_index, track in enumerate(data.get("tracks", [])):
+        if track.get("type") != "video" or track.get("name") == AI_TRACK_NAME:
+            continue
+        for segment in track.get("segments", []):
+            timerange = segment.get("target_timerange") or {}
+            start = int(timerange.get("start") or 0)
+            duration = int(timerange.get("duration") or 0)
+            if duration <= 0:
+                continue
+            material = videos.get(segment.get("material_id"), {})
+            rows.append(
+                {
+                    "segment_id": str(segment.get("id") or ""),
+                    "track_index": track_index,
+                    "track_name": track.get("name"),
+                    "material_id": segment.get("material_id"),
+                    "material_name": material.get("material_name"),
+                    "start_us": start,
+                    "end_us": start + duration,
+                    "duration_us": duration,
+                }
+            )
+    return rows
+
+
+def interval_is_contained(start_us: int, end_us: int, intervals: list[tuple[int, int]]) -> bool:
+    if not intervals:
         return False
-    plain = out_dir / "audit_root_before.dec.json"
-    decrypt(jy_draftc, root_path, plain)
-    data = read_json(plain)
-    return str(data.get("id") or "") == timeline_id
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(intervals):
+        if not merged or start > merged[-1][1]:
+            merged.append((start, end))
+        else:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+    return any(start_us >= start and end_us <= end for start, end in merged)
+
+
+def assert_slots_inside_video_segments(slots: list[dict[str, Any]], data: dict[str, Any]) -> dict[str, Any]:
+    video_rows = draft_video_segments(data)
+    if not video_rows:
+        raise RuntimeError("当前 active timeline 没有可承载图片的 video segment")
+    by_id = {row["segment_id"]: row for row in video_rows if row["segment_id"]}
+    final_video_end = max(row["end_us"] for row in video_rows)
+    errors = []
+    for slot in slots:
+        start_us = int(slot["start_us"])
+        end_us = int(slot["end_us"])
+        if end_us > final_video_end:
+            errors.append(f"{slot['slot_id']}:IMAGE_AFTER_FINAL_VIDEO_END")
+            continue
+        missing = [sid for sid in slot["container_video_segment_ids"] if sid not in by_id]
+        if missing:
+            errors.append(f"{slot['slot_id']}:MISSING_CONTAINER_VIDEO_SEGMENT={missing}")
+            continue
+        intervals = [(by_id[sid]["start_us"], by_id[sid]["end_us"]) for sid in slot["container_video_segment_ids"]]
+        if not interval_is_contained(start_us, end_us, intervals):
+            errors.append(f"{slot['slot_id']}:SLOT_CROSSES_VIDEO_GAP_OR_EXCEEDS_CONTAINER")
+    if errors:
+        raise RuntimeError("visual_slot_plan 与当前 active timeline video segment 不一致：" + "; ".join(errors))
+    return {
+        "final_video_end_us": final_video_end,
+        "container_video_segment_count": len(video_rows),
+    }
 
 
 def subtitle_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -499,6 +635,7 @@ def map_items(items: list[dict[str, Any]], rows: list[dict[str, Any]]) -> list[d
         row = match["row"]
         score = float(match["score"])
         method = f"subtitle_text_window_global:{match['method']}"
+        duration_us = int(row.get("duration_us") or 0)
         if score >= MIN_MATCH_CONFIDENCE:
             min_start_index = max(min_start_index, int(match["start_index"]))
         mapped.append(
@@ -507,7 +644,7 @@ def map_items(items: list[dict[str, Any]], rows: list[dict[str, Any]]) -> list[d
                 "subtitle_index": row["subtitle_index"],
                 "subtitle_text": row["subtitle_text"],
                 "start_us": row["start_us"],
-                "duration_us": PHOTO_DURATION_US,
+                "duration_us": duration_us,
                 "match_method": method,
                 "confidence": round(float(score), 4),
                 "matched_window": match["text"],
@@ -526,9 +663,9 @@ def map_items(items: list[dict[str, Any]], rows: list[dict[str, Any]]) -> list[d
         if participates_in_track and original < last_end:
             row["start_us"] = last_end
             row["match_method"] += "+nonoverlap_nudge"
-        row["end_us"] = row["start_us"] + PHOTO_DURATION_US
+        row["end_us"] = row["start_us"] + int(row["duration_us"])
         row["start_sec"] = row["start_us"] / SEC
-        row["duration_sec"] = PHOTO_DURATION_US / SEC
+        row["duration_sec"] = int(row["duration_us"]) / SEC
         row["nudged_us"] = row["start_us"] - original
         if participates_in_track:
             last_end = row["end_us"]
@@ -602,8 +739,8 @@ def append_ai_track(data: dict[str, Any], mapped: list[dict[str, Any]]) -> None:
     ]:
         data["materials"].setdefault(key, [])
 
-    text_tracks = [t for t in data.get("tracks", []) if t.get("type") == "text"]
-    subtitle_track = max(text_tracks, key=lambda t: len(t.get("segments", [])))
+    tracks = data.get("tracks", [])
+    text_track_indexes = [index for index, track in enumerate(tracks) if track.get("type") == "text"]
     filter_tri = [
         int(seg.get("track_render_index") or 0)
         for track in data.get("tracks", [])
@@ -612,10 +749,13 @@ def append_ai_track(data: dict[str, Any], mapped: list[dict[str, Any]]) -> None:
         if "track_render_index" in seg
     ]
     ai_track_render_index = max(filter_tri, default=2) + 1
-    new_subtitle_tri = ai_track_render_index + 1
-    for seg in subtitle_track.get("segments", []):
-        if "track_render_index" in seg:
-            seg["track_render_index"] = new_subtitle_tri
+    new_text_tri = ai_track_render_index + 1
+    for track in tracks:
+        if track.get("type") != "text":
+            continue
+        for seg in track.get("segments", []):
+            if int(seg.get("track_render_index") or 0) <= ai_track_render_index:
+                seg["track_render_index"] = new_text_tri
 
     ai_track = {"id": guid(), "type": "video", "flag": 2, "segments": [], "name": AI_TRACK_NAME}
     ai_render_index = 12000
@@ -661,8 +801,8 @@ def append_ai_track(data: dict[str, Any], mapped: list[dict[str, Any]]) -> None:
         ai_track["segments"].append(
             {
                 "id": segment_id,
-                "source_timerange": {"duration": PHOTO_DURATION_US},
-                "target_timerange": {"start": row["start_us"], "duration": PHOTO_DURATION_US},
+                "source_timerange": {"duration": int(row["duration_us"])},
+                "target_timerange": {"start": int(row["start_us"]), "duration": int(row["duration_us"])},
                 "render_timerange": {},
                 "clip": {"scale": {"x": 1.0, "y": 1.0}, "transform": {"x": 0.0, "y": 0.0}, "flip": {}},
                 "uniform_scale": {},
@@ -680,9 +820,8 @@ def append_ai_track(data: dict[str, Any], mapped: list[dict[str, Any]]) -> None:
         row["draft_material_id"] = material_id
         row["draft_segment_id"] = segment_id
 
-    tracks = data.get("tracks", [])
-    subtitle_index = tracks.index(subtitle_track)
-    tracks.insert(subtitle_index, ai_track)
+    insert_index = min(text_track_indexes) if text_track_indexes else len(tracks)
+    tracks.insert(insert_index, ai_track)
 
 
 def update_key_value(draft_dir: Path, mapped: list[dict[str, Any]], removed_ai: dict[str, set[str]] | None = None) -> None:
@@ -732,13 +871,230 @@ def update_key_value(draft_dir: Path, mapped: list[dict[str, Any]], removed_ai: 
     write_json(path, data)
 
 
+def inspect_written_ai(data: dict[str, Any], image_dir: Path) -> dict[str, Any]:
+    image_root = str(image_dir).replace("\\", "/")
+    videos = {m["id"]: m for m in data["materials"].get("videos", [])}
+    ai_tracks = []
+    ai_segments = []
+    ai_segment_rows = []
+    filter_layers = []
+    text_layers = []
+    text_track_summaries = []
+    for index, track in enumerate(data.get("tracks", [])):
+        layers = sorted(
+            set(
+                seg.get("track_render_index")
+                for seg in track.get("segments", [])
+                if seg.get("track_render_index") is not None
+            )
+        )
+        if track.get("type") == "filter":
+            filter_layers.extend(layers)
+        if track.get("type") == "text":
+            text_layers.extend(layers)
+            text_track_summaries.append(
+                {
+                    "track_index": index,
+                    "name": track.get("name"),
+                    "count": len(track.get("segments", [])),
+                    "track_render_layers": layers,
+                }
+            )
+        rows = []
+        for segment in track.get("segments", []):
+            material = videos.get(segment.get("material_id"))
+            if not material:
+                continue
+            name = material.get("material_name") or ""
+            path = str(material.get("path") or "").replace("\\", "/")
+            if track.get("name") == AI_TRACK_NAME or image_root in path:
+                image_id = image_id_from_filename(Path(name)) or image_id_from_filename(Path(path))
+                rows.append((segment, material))
+                timerange = segment.get("target_timerange") or {}
+                source_timerange = segment.get("source_timerange") or {}
+                start_us = int(timerange.get("start") or 0)
+                duration_us = int(timerange.get("duration") or 0)
+                ai_segment_rows.append(
+                    {
+                        "image_id": image_id,
+                        "material_name": name,
+                        "path": material.get("path"),
+                        "segment_id": segment.get("id"),
+                        "material_id": segment.get("material_id"),
+                        "track_index": index,
+                        "track_name": track.get("name"),
+                        "track_type": track.get("type"),
+                        "track_render_index": segment.get("track_render_index"),
+                        "start_us": start_us,
+                        "end_us": start_us + duration_us,
+                        "duration_us": duration_us,
+                        "source_duration_us": int(source_timerange.get("duration") or 0),
+                    }
+                )
+        if rows:
+            ai_tracks.append(
+                {
+                    "track_index": index,
+                    "name": track.get("name"),
+                    "type": track.get("type"),
+                    "flag": track.get("flag"),
+                    "count": len(rows),
+                    "track_render_layers": sorted(set(seg.get("track_render_index") for seg, _ in rows)),
+                }
+            )
+            ai_segments.extend(rows)
+
+    missing_paths = []
+    durations = sorted(set(row["duration_us"] for row in ai_segment_rows))
+    ordered = sorted(ai_segment_rows, key=lambda row: row["start_us"])
+    overlaps = []
+    for left, right in zip(ordered, ordered[1:]):
+        if int(left["end_us"]) > int(right["start_us"]):
+            overlaps.append((left.get("material_name"), right.get("material_name")))
+    for _, material in ai_segments:
+        if not Path(str(material.get("path") or "").replace("/", "\\")).exists():
+            missing_paths.append(material.get("material_name") or material.get("path"))
+
+    main_text_track = max(text_track_summaries, key=lambda row: row["count"], default=None)
+    return {
+        "ai_track_count": len(ai_tracks),
+        "ai_tracks": ai_tracks,
+        "ai_segment_count": len(ai_segment_rows),
+        "ai_segment_rows": sorted(ai_segment_rows, key=lambda row: (row["start_us"], row["image_id"])),
+        "durations_us": durations,
+        "missing_paths": missing_paths,
+        "overlaps": overlaps,
+        "filter_layers": sorted(set(filter_layers)),
+        "text_layers": sorted(set(text_layers)),
+        "text_tracks": text_track_summaries,
+        "main_text_track": main_text_track,
+    }
+
+
+def post_write_actual_image_audit(
+    data: dict[str, Any],
+    slots: list[dict[str, Any]],
+    image_dir: Path,
+) -> dict[str, Any]:
+    written = inspect_written_ai(data, image_dir)
+    slot_by_id = {slot["image_id"]: slot for slot in slots}
+    written_by_id: dict[str, dict[str, Any]] = {}
+    duplicate_written_ids = []
+    for row in written["ai_segment_rows"]:
+        image_id = row.get("image_id") or ""
+        if image_id in written_by_id:
+            duplicate_written_ids.append(image_id)
+        written_by_id[image_id] = row
+
+    precision_rows = []
+    errors = []
+    source_duration_mismatch_count = 0
+    for image_id, slot in sorted(slot_by_id.items(), key=lambda item: image_id_sort_key(item[0])):
+        actual = written_by_id.get(image_id)
+        if not actual:
+            errors.append(f"MISSING_WRITTEN_IMAGE={image_id}")
+            precision_rows.append(
+                {
+                    "image_id": image_id,
+                    "status": "missing",
+                    "expected_start_us": slot["start_us"],
+                    "expected_end_us": slot["end_us"],
+                    "actual_start_us": None,
+                    "actual_end_us": None,
+                }
+            )
+            continue
+        status = "ok"
+        if int(actual["start_us"]) != int(slot["start_us"]):
+            status = "failed"
+        if int(actual["end_us"]) != int(slot["end_us"]):
+            status = "failed"
+        if int(actual["duration_us"]) != int(slot["duration_us"]):
+            status = "failed"
+        source_duration_delta_us = abs(int(actual.get("source_duration_us") or 0) - int(slot["duration_us"]))
+        if source_duration_delta_us > SOURCE_DURATION_TOLERANCE_US:
+            status = "failed"
+            source_duration_mismatch_count += 1
+        if status != "ok":
+            errors.append(f"SLOT_PRECISION_MISMATCH={image_id}")
+        precision_rows.append(
+            {
+                "image_id": image_id,
+                "status": status,
+                "expected_start_us": slot["start_us"],
+                "expected_end_us": slot["end_us"],
+                "expected_duration_us": slot["duration_us"],
+                "actual_start_us": actual["start_us"],
+                "actual_end_us": actual["end_us"],
+                "actual_duration_us": actual["duration_us"],
+                "actual_source_duration_us": actual.get("source_duration_us"),
+                "source_duration_delta_us": source_duration_delta_us,
+                "track_render_index": actual["track_render_index"],
+            }
+        )
+
+    unexpected_ids = sorted(set(written_by_id) - set(slot_by_id), key=image_id_sort_key)
+    if unexpected_ids:
+        errors.append("UNEXPECTED_AI_BROLL_RESIDUE=" + ",".join(unexpected_ids))
+    if duplicate_written_ids:
+        errors.append("DUPLICATE_WRITTEN_IMAGE_IDS=" + ",".join(sorted(set(duplicate_written_ids), key=image_id_sort_key)))
+    if written["ai_segment_count"] != len(slots):
+        errors.append(f"WRITTEN_IMAGE_COUNT={written['ai_segment_count']} SLOT_COUNT={len(slots)}")
+    if written["ai_track_count"] != 1:
+        errors.append(f"AI_TRACK_COUNT={written['ai_track_count']}")
+    if written["missing_paths"]:
+        errors.append("MISSING_IMAGE_PATHS")
+    if written["overlaps"]:
+        errors.append("AI_BROLL_OVERLAPS")
+    try:
+        video_audit = assert_slots_inside_video_segments(slots, data)
+    except RuntimeError as exc:
+        video_audit = {"video_container_audit_error": str(exc)}
+        errors.append("VIDEO_CONTAINER_AUDIT_FAILED")
+    final_video_end_us = int(video_audit.get("final_video_end_us") or 0)
+    image_after_final_video_end_count = (
+        sum(1 for row in written["ai_segment_rows"] if final_video_end_us and int(row["end_us"]) > final_video_end_us)
+        if final_video_end_us
+        else 0
+    )
+
+    ai_layers = written["ai_tracks"][0]["track_render_layers"] if written["ai_tracks"] else []
+    if written["filter_layers"] and ai_layers and max(written["filter_layers"]) >= min(ai_layers):
+        errors.append("AI_NOT_ABOVE_FILTER")
+    if written["text_layers"] and ai_layers and max(ai_layers) >= min(written["text_layers"]):
+        errors.append("AI_NOT_BELOW_TEXT")
+
+    return {
+        "image_slot_count": len(slots),
+        "written_image_segment_count": written["ai_segment_count"],
+        "slot_precision_mismatch_count": sum(1 for row in precision_rows if row["status"] != "ok"),
+        "source_duration_mismatch_count": source_duration_mismatch_count,
+        "source_duration_tolerance_us": SOURCE_DURATION_TOLERANCE_US,
+        "image_after_final_video_end_count": image_after_final_video_end_count,
+        "slot_precision_rows": precision_rows,
+        "written_ai": written,
+        "video_audit": video_audit,
+        "no_old_ai_broll_residue": not unexpected_ids and not duplicate_written_ids and written["ai_track_count"] == 1,
+        "hard_errors": errors,
+        "post_write_actual_image_audit_gate_passed": not errors,
+    }
+
+
 def write_report(out_dir: Path, rows: list[dict[str, Any]]) -> Path:
     path = out_dir / "broll_exec_plan.csv"
     fields = [
+        "slot_id",
         "image_id",
         "image_path",
         "start_sec",
+        "end_sec",
         "duration_sec",
+        "start_us",
+        "end_us",
+        "duration_us",
+        "source_start_us",
+        "source_end_us",
+        "container_video_segment_ids",
         "subtitle_index",
         "subtitle_text",
         "target_text",
@@ -756,7 +1112,11 @@ def write_report(out_dir: Path, rows: list[dict[str, Any]]) -> Path:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
         for row in sorted(rows, key=lambda r: image_id_sort_key(r["image_id"])):
-            writer.writerow({field: row.get(field, "") for field in fields})
+            output = {field: row.get(field, "") for field in fields}
+            output["end_sec"] = int(row.get("end_us") or 0) / SEC if row.get("end_us") is not None else ""
+            if isinstance(output.get("container_video_segment_ids"), list):
+                output["container_video_segment_ids"] = ",".join(output["container_video_segment_ids"])
+            writer.writerow(output)
     return path
 
 
@@ -765,17 +1125,13 @@ def write_confirmation_sheet(
     args: argparse.Namespace,
     timeline_id: str,
     timeline_name: str,
-    subtitles: list[dict[str, Any]],
-    items: list[dict[str, Any]],
     image_ids: list[str],
-    mapped: list[dict[str, Any]],
-    low_confidence: list[dict[str, Any]],
-    exclude_ids: set[str],
+    slots: list[dict[str, Any]],
+    video_audit: dict[str, Any],
 ) -> Path:
-    nonempty_subtitles = [row for row in subtitles if clean_text(row.get("subtitle_text") or "")]
-    can_execute = bool(nonempty_subtitles) and len(items) == len(image_ids) and len(mapped) == len(items) and not low_confidence
+    can_execute = len(slots) == len(image_ids)
     path = out_dir / "preflight_confirmation.md"
-    sample_rows = sorted(mapped, key=lambda row: image_id_sort_key(row["image_id"]))[:12]
+    sample_rows = sorted(slots, key=lambda row: image_id_sort_key(row["image_id"]))[:12]
     lines = [
         "# 剪映 AI B-roll 施工确认单",
         "",
@@ -786,41 +1142,37 @@ def write_confirmation_sheet(
         f"- 当前时间线 ID：`{timeline_id}`",
         f"- B-ROLL 设计稿：`{args.broll}`",
         f"- AI 静态图目录：`{args.image_dir}`",
-        "- 图片固定时长：`1.3s`",
-        f"- 手工已铺/自动忽略图片：`{', '.join(sorted(exclude_ids, key=image_id_sort_key)) if exclude_ids else '无'}`",
+        f"- visual_slot_plan：`{args.visual_slot_plan}`",
         "",
-        "## 当前工程字幕读取",
+        "## 当前工程时间线读取",
         "",
-        f"- subtitle_rows：`{len(subtitles)}`",
-        f"- subtitle_text_nonempty：`{len(nonempty_subtitles)}`",
-        "- 字幕来源：当前剪映工程解密后的 text track",
-        "- 正文脚本：未使用",
+        f"- final_video_end_us：`{video_audit['final_video_end_us']}`",
+        f"- container_video_segment_count：`{video_audit['container_video_segment_count']}`",
+        "- 对齐来源：visual_slot_plan target_start_us / target_end_us",
         "",
         "## B-ROLL 与图片读取",
         "",
-        f"- B-ROLL AI 条目：`{len(items)}`",
         f"- 规范命名 AI 图片：`{len(image_ids)}`",
-        f"- 解析后可施工图片：`{len(mapped)}`",
+        f"- visual slots：`{len(slots)}`",
         "",
         "## 匹配结论",
         "",
-        f"- 低置信匹配数量：`{len(low_confidence)}`",
-        f"- 低置信图片编号：`{', '.join(row['image_id'] for row in low_confidence) if low_confidence else '无'}`",
+        "- 字幕语义匹配：由上游 A-Roll/B-Roll QC 输出的 visual_slot_plan 承担，本阶段不重新猜字幕轨",
         f"- 是否允许写入：`{'YES' if can_execute else 'NO'}`",
         "",
         "## 前 12 张抽样",
         "",
-        "| 图片 | start_sec | 置信度 | 字幕序号 | 匹配字幕 | B-ROLL 台词落点 |",
+        "| 图片 | start_sec | end_sec | duration_sec | slot | 台词 |",
         "|---|---:|---:|---:|---|---|",
     ]
     for row in sample_rows:
         lines.append(
-            "| {image_id} | {start_sec:.3f} | {confidence} | {subtitle_index} | {subtitle_text} | {target_text} |".format(
+            "| {image_id} | {start_sec:.3f} | {end_sec:.3f} | {duration_sec:.3f} | {slot_id} | {target_text} |".format(
                 image_id=row["image_id"],
                 start_sec=float(row["start_sec"]),
-                confidence=row.get("confidence", ""),
-                subtitle_index=row.get("subtitle_index", ""),
-                subtitle_text=str(row.get("subtitle_text", "")).replace("|", "/"),
+                end_sec=int(row["end_us"]) / SEC,
+                duration_sec=float(row["duration_sec"]),
+                slot_id=str(row.get("slot_id", "")).replace("|", "/"),
                 target_text=str(row.get("target_text", "")).replace("|", "/"),
             )
         )
@@ -829,24 +1181,22 @@ def write_confirmation_sheet(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Directly write AI B-roll photo clips into Jianying encrypted draft.")
+    parser = argparse.ArgumentParser(description="Write AI B-roll photo clips from visual_slot_plan into Jianying encrypted draft.")
     parser.add_argument("--draft-dir", type=Path, required=True)
     parser.add_argument("--broll", type=Path, required=True)
     parser.add_argument("--image-dir", type=Path, required=True)
+    parser.add_argument("--visual-slot-plan", type=Path, required=True)
     parser.add_argument("--jy-draftc", type=Path, default=DEFAULT_JY_DRAFTC)
     parser.add_argument("--runtime", type=Path, default=DEFAULT_RUNTIME)
     parser.add_argument("--preflight-only", action="store_true", help="只生成施工确认单，不写入草稿。")
     parser.add_argument("--confirm-write", action="store_true", help="确认当前工程/B-ROLL/字幕匹配后才允许写入草稿。")
-    parser.add_argument("--exclude-ids", default="", help="逗号分隔的图片编号；这些图视为手工已铺，自动施工时跳过。")
-    parser.add_argument("--timeline-name", default="", help="内部草稿范围名称；通常留空，默认使用当前 prepared 草稿。")
     args = parser.parse_args()
-    exclude_ids = parse_id_list(args.exclude_ids)
 
     for label, path in {
         "draft_dir": args.draft_dir,
         "broll": args.broll,
         "image_dir": args.image_dir,
-        "jy_draftc": args.jy_draftc,
+        "visual_slot_plan": args.visual_slot_plan,
     }.items():
         if not path.exists():
             raise FileNotFoundError(f"{label} 不存在：{path}")
@@ -855,102 +1205,92 @@ def main() -> int:
     out_dir = args.runtime / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    timeline_id, resolved_timeline_name = resolve_timeline_id(args.draft_dir, args.timeline_name)
-    timeline_dir = args.draft_dir / "Timelines" / timeline_id
-    encrypted_path = timeline_dir / "draft_content.json"
+    binding = DraftRuntimeBinding.bind(args.draft_dir, args.jy_draftc, out_dir)
     plain_path = out_dir / "draft_content.dec.json"
     modified_plain = out_dir / "draft_content.modified.json"
     encrypted_out = out_dir / "draft_content.encrypted.json"
 
     print(f"draft_dir={args.draft_dir}")
-    print(f"timeline_id={timeline_id}")
-    print(f"draft_scope={resolved_timeline_name}")
+    print(f"timeline_id={binding.timeline_id}")
+    print(f"draft_scope={binding.timeline_name}")
     print(f"broll={args.broll}")
     print(f"image_dir={args.image_dir}")
-    print("duration_sec=1.3")
+    print(f"visual_slot_plan={args.visual_slot_plan}")
+    print(f"jy_draftc={binding.jy_draftc}")
 
-    assert_layout_has_no_duplicate_timeline_ids(args.draft_dir)
-    assert_all_project_timeline_files_match_folder_ids(args.draft_dir, args.jy_draftc, out_dir)
-    write_root_mirror = root_mirrors_timeline_id(args.draft_dir, args.jy_draftc, out_dir, timeline_id)
-
-    decrypt(args.jy_draftc, encrypted_path, plain_path)
-    data = read_json(plain_path)
-    assert_timeline_content_id(data, timeline_id, encrypted_path)
-    table_ids = broll_table_ai_ids(args.broll)
-    static_list_ids = broll_static_list_ids(args.broll)
-    image_ids = [image_id for image_id in normalized_image_files(args.image_dir).keys() if image_id not in exclude_ids]
-    if not image_ids:
-        raise RuntimeError(f"AI 图片目录没有规范命名图片：{args.image_dir}")
-    table_ids = [image_id for image_id in table_ids if image_id not in exclude_ids]
-    static_list_ids = [image_id for image_id in static_list_ids if image_id not in exclude_ids]
-    if table_ids and table_ids != image_ids:
-        raise RuntimeError(
-            "B-roll 表格 AI 编号与图片目录不一致："
-            f"table={table_ids}, images={image_ids}"
-        )
-    if static_list_ids and static_list_ids != image_ids:
-        raise RuntimeError(
-            "AI 静态图清单编号与图片目录不一致："
-            f"static_list={static_list_ids}, images={image_ids}"
-        )
-    items = [item for item in parse_broll_items(args.broll, args.image_dir) if item["image_id"] not in exclude_ids]
-    if len(items) != len(image_ids):
-        raise RuntimeError(f"B-roll AI 图片解析数量与图片目录不一致：items={len(items)} images={len(image_ids)}")
-    subtitles = subtitle_rows(data)
-    mapped = map_items(items, subtitles)
-    low_confidence = [row for row in mapped if float(row.get("confidence", 0)) < MIN_MATCH_CONFIDENCE]
+    data = binding.decrypt_timeline(plain_path)
+    image_ids, image_files = validate_broll_image_contract(args.broll, args.image_dir)
+    slots = load_visual_slot_plan(args.visual_slot_plan, args.image_dir, image_files)
+    validate_slot_plan_ids(slots, image_ids)
+    validate_no_slot_overlaps(slots)
+    validate_slot_confidence(slots)
+    video_audit = assert_slots_inside_video_segments(slots, data)
     confirmation = write_confirmation_sheet(
         out_dir,
         args,
-        timeline_id,
-        resolved_timeline_name,
-        subtitles,
-        items,
+        binding.timeline_id,
+        binding.timeline_name,
         image_ids,
-        mapped,
-        low_confidence,
-        exclude_ids,
+        slots,
+        video_audit,
     )
-    report = write_report(out_dir, mapped)
-    print(f"subtitles={len(subtitles)}")
-    print(f"subtitle_text_nonempty={sum(1 for row in subtitles if clean_text(row.get('subtitle_text') or ''))}")
-    print(f"ai_images={len(items)}")
-    print(f"excluded={','.join(sorted(exclude_ids, key=image_id_sort_key)) if exclude_ids else 'none'}")
-    print(f"mapped={len(mapped)}")
-    print(f"low_confidence={','.join(row['image_id'] for row in low_confidence) if low_confidence else 'none'}")
+    report = write_report(out_dir, slots)
+    print(f"ai_images={len(image_ids)}")
+    print(f"visual_slots={len(slots)}")
+    print(f"final_video_end_us={video_audit['final_video_end_us']}")
     print(f"confirmation={confirmation}")
     print(f"report={report}")
     print(f"work_dir={out_dir}")
     if args.preflight_only:
-        print("PRELIGHT_ONLY_NO_DRAFT_WRITE")
+        print("PREFLIGHT_ONLY_NO_DRAFT_WRITE")
         return 0
     if not args.confirm_write:
         raise RuntimeError("缺少 --confirm-write。必须先确认 preflight_confirmation.md 后才允许写入草稿。")
-    if low_confidence:
-        ids = ",".join(row["image_id"] for row in low_confidence)
-        raise RuntimeError(f"存在低置信字幕匹配，停止写入：{ids}")
 
     removed_ai = remove_existing_ai(data, args.image_dir)
-    append_ai_track(data, mapped)
+    append_ai_track(data, slots)
     write_json(modified_plain, data)
-    encrypt(args.jy_draftc, modified_plain, encrypted_out)
+    encrypt(binding.jy_draftc, modified_plain, encrypted_out)
 
-    targets = [
-        timeline_dir / "draft_content.json",
-        timeline_dir / "template-2.tmp",
-    ]
-    if write_root_mirror:
-        targets.extend([args.draft_dir / "draft_content.json", args.draft_dir / "template-2.tmp"])
-    else:
-        print("skip_root_mirror=root draft_content id is not target timeline id")
     encrypted_text = encrypted_out.read_text("utf-8")
-    for target in targets:
-        target.write_text(encrypted_text, "utf-8")
-        print(f"wrote={target}")
-    update_key_value(args.draft_dir, mapped, removed_ai)
-    assert_all_project_timeline_files_match_folder_ids(args.draft_dir, args.jy_draftc, out_dir)
 
-    print(f"written_segments={len(mapped)}")
+    def key_value_writer() -> None:
+        update_key_value(args.draft_dir, slots, removed_ai)
+
+    def post_write_validator() -> dict[str, Any]:
+        assert_all_project_timeline_files_match_folder_ids(args.draft_dir, binding.jy_draftc, out_dir)
+        post_plain = out_dir / "post_write_actual.dec.json"
+        post_data = binding.decrypt_timeline(post_plain)
+        audit = post_write_actual_image_audit(post_data, slots, args.image_dir)
+        root_mirror_consistent = True
+        if binding.mirrors_root:
+            root_mirror_consistent = sha256(binding.root_content) == sha256(binding.timeline_content)
+        audit["root_timeline_mirror_consistent"] = root_mirror_consistent
+        if not root_mirror_consistent:
+            audit["hard_errors"].append("ROOT_TIMELINE_MIRROR_INCONSISTENT")
+            audit["post_write_actual_image_audit_gate_passed"] = False
+        audit_path = out_dir / "post_write_actual_image_audit.json"
+        audit_path.write_text(json.dumps(audit, ensure_ascii=False, indent=2), "utf-8")
+        if not audit["post_write_actual_image_audit_gate_passed"]:
+            raise RuntimeError("post-write actual image audit failed: " + ",".join(audit["hard_errors"]))
+        return {
+            "post_write_actual_image_audit": str(audit_path),
+            "root_timeline_mirror_consistent": root_mirror_consistent,
+        }
+
+    transaction = binding.write_encrypted_transaction(
+        encrypted_text,
+        key_value_writer,
+        out_dir,
+        post_write_validator=post_write_validator,
+    )
+
+    for changed_path in transaction["changed_paths"]:
+        print(f"wrote={changed_path}")
+    print(f"only_specified_draft_written={transaction['only_specified_draft_written']}")
+    print(f"root_timeline_mirror_consistent={transaction['root_timeline_mirror_consistent']}")
+    print(f"post_write_actual_image_audit={transaction['post_write_actual_image_audit']}")
+    print(f"written_segments={len(slots)}")
     return 0
 
 

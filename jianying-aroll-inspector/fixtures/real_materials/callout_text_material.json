@@ -1,0 +1,18 @@
+{
+  "material": {
+    "id": "callout_text_001",
+    "role": "callout",
+    "type": "text",
+    "font_size": 48,
+    "content": "{\"text\":\"强调字\",\"styles\":[{\"range\":{\"start\":0,\"end\":3},\"font_size\":48}]}"
+  },
+  "segment": {
+    "id": "callout_segment_001",
+    "type": "callout",
+    "material_id": "callout_text_001",
+    "target_timerange": {
+      "start": 0,
+      "duration": 1000000
+    }
+  }
+}

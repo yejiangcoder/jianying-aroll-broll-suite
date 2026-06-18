@@ -1,0 +1,50 @@
+{
+  "fixture_origin": "synthetic_realistic",
+  "description": "Subtitle text is clean, but word/audio source contains a repeated spoken phrase.",
+  "source_segments": [
+    {
+      "id": "clip_subtitle_audio_mismatch",
+      "material_id": "main_video_a",
+      "source_start_us": 0,
+      "source_end_us": 3000000
+    }
+  ],
+  "word_timeline": [
+    {
+      "word_id": "w001",
+      "word_text": "你们是在",
+      "start_us": 100000,
+      "end_us": 500000,
+      "subtitle_index": 1,
+      "subtitle_uid": "s001"
+    },
+    {
+      "word_id": "w002",
+      "word_text": "你们是在",
+      "start_us": 520000,
+      "end_us": 900000,
+      "subtitle_index": 1,
+      "subtitle_uid": "s001"
+    },
+    {
+      "word_id": "w003",
+      "word_text": "集体做空呐",
+      "start_us": 920000,
+      "end_us": 1300000,
+      "subtitle_index": 1,
+      "subtitle_uid": "s001"
+    }
+  ],
+  "subtitles": [
+    {
+      "subtitle_uid": "s001",
+      "subtitle_index": 1,
+      "text": "你们是在集体做空呐",
+      "word_ids": [
+        "w001",
+        "w002",
+        "w003"
+      ]
+    }
+  ]
+}

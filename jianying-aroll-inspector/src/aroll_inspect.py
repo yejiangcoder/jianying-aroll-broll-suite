@@ -8,6 +8,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from aroll_attached_effects_preservation import inspect_attached_effects
+from aroll_runtime_paths import get_aroll_runs_dir
 from aroll_speed_mapping import EPSILON, source_to_target_delta
 from jy_bridge import (
     AI_TRACK_NAME,
@@ -25,7 +27,7 @@ from jy_bridge import (
 
 
 TOOL_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RUNTIME = TOOL_ROOT / "runtime"
+DEFAULT_RUNTIME = get_aroll_runs_dir()
 FRAME_TOLERANCE_US = 80_000
 NEAR_SCORE_DELTA = 10
 PHOTO_BROLL_SEGMENT_THRESHOLD = 5
@@ -439,14 +441,21 @@ def inspect_video_tracks(
     else:
         fatal_reasons.append("MAIN_VIDEO_TRACK_NOT_FOUND")
 
-    main_speed_safe = bool(selected) and bool(selected.get("speed_safe")) and not selected.get("has_curve_speed") and not selected.get("has_reverse") and bool(selected.get("source_target_ratio_safe"))
+    main_speed_safe = (
+        bool(selected)
+        and bool(selected.get("speed_safe_for_aroll"))
+        and bool(selected.get("speed_supported"))
+        and not selected.get("has_curve_speed")
+        and not selected.get("has_reverse")
+        and bool(selected.get("source_target_ratio_safe"))
+    )
     if selected:
         for reason in selected.get("reject_reasons") or []:
             if reason.startswith("MAIN_VIDEO_"):
                 fatal_reasons.append(reason)
-        if not selected.get("speed_safe"):
+        if not selected.get("speed_safe_for_aroll") or not selected.get("speed_supported"):
             if selected.get("speed_requires_mapping"):
-                fatal_reasons.append("MAIN_VIDEO_SPEED_REQUIRES_MAPPING")
+                fatal_reasons.append("MAIN_VIDEO_SPEED_MAPPING_UNSUPPORTED")
             else:
                 fatal_reasons.append("MAIN_VIDEO_SPEED_UNSAFE")
         if selected.get("has_curve_speed"):
@@ -652,21 +661,41 @@ def detect_existing_broll(data: dict[str, Any], video_candidates: list[dict[str,
     return bool(reasons), sorted(set(reasons))
 
 
-def attached_effect_warnings(data: dict[str, Any], selected: dict[str, Any] | None) -> tuple[bool, list[str]]:
+def selected_video_track(data: dict[str, Any], selected: dict[str, Any] | None) -> dict[str, Any] | None:
     if not selected:
-        return False, []
-    speeds_by_id = material_index(data, "speeds")
-    speed_ids = set(speeds_by_id)
+        return None
     video_tracks = [track for track in data.get("tracks") or [] if track.get("type") == "video"]
-    target_track = None
     for track in video_tracks:
         if str(track.get("id") or "") == selected.get("track_id"):
-            target_track = track
-            break
-    if not target_track:
-        return False, []
-    suspicious = any(contains_effect_like_ref(segment, data, speed_ids) for segment in target_track.get("segments") or [])
-    return suspicious, ["MAIN_VIDEO_HAS_UNRECOGNIZED_ATTACHED_EFFECT_REFS"] if suspicious else []
+            return track
+    return None
+
+
+def run_speed_mapping_checker(
+    main_track: dict[str, Any],
+    subtitles: list[dict[str, Any]],
+    max_allowed_speed: float,
+) -> dict[str, Any]:
+    from aroll_speed_self_test import run_speed_mapping_self_test
+
+    return run_speed_mapping_self_test(main_track, subtitles, max_allowed_speed)
+
+
+def attached_effect_check(data: dict[str, Any], selected: dict[str, Any] | None) -> tuple[bool, list[str], list[str], dict[str, Any]]:
+    report = inspect_attached_effects(data, selected)
+    has_attached_effects = int(report.get("attached_ref_count") or 0) > 0
+    fatal_reasons: list[str] = []
+    if report.get("fatal_reasons") or not bool(report.get("attached_refs_cloneable", True)):
+        fatal_reasons.append("MAIN_VIDEO_HAS_UNRECOGNIZED_ATTACHED_EFFECT_REFS")
+    warnings = [str(row) for row in (report.get("warnings") or [])]
+    if has_attached_effects and not warnings:
+        warnings.append("ATTACHED_REFS_PRESENT_CLONE_REQUIRED")
+    return has_attached_effects, sorted(set(fatal_reasons)), sorted(set(warnings)), report
+
+
+def attached_effect_warnings(data: dict[str, Any], selected: dict[str, Any] | None) -> tuple[bool, list[str]]:
+    has_attached_effects, _fatal_reasons, warnings, _report = attached_effect_check(data, selected)
+    return has_attached_effects, warnings
 
 
 def run_checks(
@@ -743,6 +772,38 @@ def build_report(args: argparse.Namespace) -> tuple[Path, Path, Path]:
     elif not nonempty_subtitles:
         fatal_reasons.append("SUBTITLE_TEXT_NOT_READABLE")
 
+    speed_mapping_self_test: dict[str, Any] = {}
+    speed_mapping_required = bool((selected_main or {}).get("speed_requires_mapping"))
+    speed_mapping_validated = not speed_mapping_required
+    if selected_main and speed_mapping_required:
+        warnings.append("MAIN_VIDEO_SPEED_REQUIRES_MAPPING")
+        main_track = selected_video_track(data, selected_main)
+        if not main_track:
+            fatal_reasons.append("MAIN_VIDEO_SPEED_MAPPING_UNSUPPORTED")
+            speed_mapping_self_test = {
+                "passed": False,
+                "fatal_reasons": ["MAIN_VIDEO_TRACK_NOT_FOUND_FOR_SPEED_MAPPING"],
+            }
+        else:
+            try:
+                speed_mapping_self_test = run_speed_mapping_checker(
+                    main_track,
+                    subtitles,
+                    float(getattr(args, "max_allowed_speed", 1.25)),
+                )
+            except Exception as exc:
+                fatal_reasons.append("MAIN_VIDEO_SPEED_MAPPING_UNSUPPORTED")
+                speed_mapping_self_test = {
+                    "passed": False,
+                    "fatal_reasons": ["SPEED_MAPPING_CHECKER_UNAVAILABLE"],
+                    "error": str(exc),
+                }
+            else:
+                speed_mapping_validated = bool(speed_mapping_self_test.get("passed"))
+                if not speed_mapping_validated:
+                    fatal_reasons.append("MAIN_VIDEO_SPEED_MAPPING_SELF_TEST_FAILED")
+                    fatal_reasons.extend(str(reason) for reason in (speed_mapping_self_test.get("fatal_reasons") or []))
+
     audio_tracks, has_independent_audio_track, has_complex_audio, audio_fatals = inspect_audio_tracks(data)
     fatal_reasons.extend(f"AUDIO:{reason}" for reason in audio_fatals)
 
@@ -754,8 +815,9 @@ def build_report(args: argparse.Namespace) -> tuple[Path, Path, Path]:
     if has_existing_broll:
         fatal_reasons.extend(broll_reasons)
 
-    has_attached_effects, attached_warnings = attached_effect_warnings(data, selected_main)
+    has_attached_effects, attached_fatals, attached_warnings, attached_report = attached_effect_check(data, selected_main)
     if has_attached_effects:
+        fatal_reasons.extend(attached_fatals)
         warnings.extend(attached_warnings)
 
     fatal_reasons = sorted(set(str(reason) for reason in fatal_reasons if reason))
@@ -769,6 +831,7 @@ def build_report(args: argparse.Namespace) -> tuple[Path, Path, Path]:
         and not has_complex_audio
         and not has_complex_filter
         and main_video_speed_safe
+        and speed_mapping_validated
         and all(timeline_checks.values())
     )
 
@@ -792,12 +855,17 @@ def build_report(args: argparse.Namespace) -> tuple[Path, Path, Path]:
         "audio_tracks": audio_tracks,
         "text_tracks": text_tracks,
         "filter_tracks": filter_tracks,
+        "attached_effects_report": attached_report,
         "has_existing_broll": has_existing_broll,
+        "has_attached_effects": has_attached_effects,
         "has_independent_audio_track": has_independent_audio_track,
         "has_complex_audio": has_complex_audio,
         "has_global_filter": has_global_filter,
         "has_complex_filter": has_complex_filter,
         "main_video_speed_safe": main_video_speed_safe,
+        "main_video_speed_mapping_required": speed_mapping_required,
+        "main_video_speed_mapping_validated": speed_mapping_validated,
+        "speed_mapping_self_test": speed_mapping_self_test,
         "can_aroll_rewrite": can_aroll_rewrite,
         "fatal_reasons": fatal_reasons,
         "warnings": warnings,
