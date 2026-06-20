@@ -573,7 +573,7 @@ class ArollV21QualityGateTests(unittest.TestCase):
         self.assertFalse(report["gate_passed"])
         self.assertIn("V21_FINAL_REPEAT_UNRESOLVED_AFTER_CONVERGENCE", report["blocker_codes"])
 
-    def test_final_caption_visible_repeat_blocks_containment_repeat(self) -> None:
+    def test_final_caption_visible_repeat_classifies_distant_containment_without_blocking(self) -> None:
         gate = build_final_caption_visible_repeat_gate(
             [
                 _caption(1, "v21_seg_000001", 0, 700_000, text="就国南"),
@@ -581,9 +581,11 @@ class ArollV21QualityGateTests(unittest.TestCase):
             ]
         )
 
-        self.assertFalse(gate["gate_passed"])
-        self.assertEqual(gate["containment_repeat_count"], 1)
-        self.assertIn("V21_FINAL_CAPTION_VISIBLE_REPEAT_GATE_FAILED", gate["blocker_codes"])
+        self.assertTrue(gate["gate_passed"])
+        self.assertEqual(gate["containment_repeat_count"], 0)
+        self.assertEqual(gate["containment_repeat_raw_count"], 1)
+        self.assertEqual(gate["repeat_classification_candidates"][0]["classification"], "short_concept_reuse")
+        self.assertNotIn("V21_FINAL_CAPTION_VISIBLE_REPEAT_GATE_FAILED", gate["blocker_codes"])
 
     def test_final_caption_visible_repeat_blocks_prefix_suffix_overlap(self) -> None:
         gate = build_final_caption_visible_repeat_gate(
@@ -597,7 +599,7 @@ class ArollV21QualityGateTests(unittest.TestCase):
         self.assertEqual(gate["prefix_suffix_overlap_count"], 1)
         self.assertEqual(gate["prefix_suffix_overlap_candidates"][0]["overlap_text"], "相信自己")
 
-    def test_final_caption_visible_repeat_blocks_ngram_repeat(self) -> None:
+    def test_final_caption_visible_repeat_warns_on_shared_ngram_without_boundary_restart(self) -> None:
         gate = build_final_caption_visible_repeat_gate(
             [
                 _caption(1, "v21_seg_000001", 0, 900_000, text="我们重新开始吧"),
@@ -605,8 +607,9 @@ class ArollV21QualityGateTests(unittest.TestCase):
             ]
         )
 
-        self.assertFalse(gate["gate_passed"])
-        self.assertGreaterEqual(gate["ngram_repeat_count"], 1)
+        self.assertTrue(gate["gate_passed"], gate)
+        self.assertEqual(gate["ngram_repeat_count"], 0)
+        self.assertGreaterEqual(gate["ngram_repeat_raw_count"], 1)
 
     def test_final_caption_visible_repeat_allows_adjacent_middle_shared_phrase(self) -> None:
         gate = build_final_caption_visible_repeat_gate(
@@ -1204,6 +1207,42 @@ class ArollV21QualityGateTests(unittest.TestCase):
         self.assertEqual([caption.text for caption in captions], ["核心概念", "什么叫核心概念"])
         self.assertEqual([caption.word_ids for caption in captions], [["w001"], ["w002", "w003"]])
 
+    def test_subtitle_renderer_repeat_cleanup_preserves_disjoint_word_coverage(self) -> None:
+        rows = [
+            ("w001", "重复表达", 0, 600_000),
+            ("w002", "重复表达", 1_200_000, 1_800_000),
+        ]
+        source_graph = _graph_for_single_subtitle_words(rows)
+        timeline = [
+            replace(
+                _segment(1, 0, 600_000),
+                source_material_id="main",
+                source_segment_id="primary_window",
+                source_start_us=0,
+                source_end_us=600_000,
+                target_start_us=0,
+                target_end_us=600_000,
+                word_ids=["w001"],
+                text="重复表达",
+            ),
+            replace(
+                _segment(2, 1_200_000, 1_800_000),
+                source_material_id="main",
+                source_segment_id="primary_window",
+                source_start_us=1_200_000,
+                source_end_us=1_800_000,
+                target_start_us=600_000,
+                target_end_us=1_200_000,
+                word_ids=["w002"],
+                text="重复表达",
+            ),
+        ]
+
+        captions = SubtitleRenderer().render(timeline, source_graph)
+
+        self.assertEqual([caption.text for caption in captions], ["重复表达", "重复表达"])
+        self.assertEqual([caption.word_ids for caption in captions], [["w001"], ["w002"]])
+
     def test_final_visible_repairs_dangling_prefix_by_caption_only_merge_when_source_gap_slightly_exceeds_limit(self) -> None:
         source_graph, timeline = _timeline_with_source_gap_dangling_pair()
         renderer = SubtitleRenderer()
@@ -1695,7 +1734,7 @@ class ArollV21QualityGateTests(unittest.TestCase):
         self.assertEqual(result.final_timeline[0].text, "就有了继续表达的底气")
         self.assertEqual([caption.text for caption in result.captions], ["就有了继续表达的底气"])
 
-    def test_final_visible_bridges_omitted_tail_before_de_shi_duplicate(self) -> None:
+    def test_final_visible_prefers_later_complete_take_before_de_shi_duplicate(self) -> None:
         rows = [
             ("w001", "你", 0, 200_000),
             ("w002", "嘲笑", 240_000, 480_000),
@@ -1749,14 +1788,96 @@ class ArollV21QualityGateTests(unittest.TestCase):
 
         self.assertTrue(result.report["final_visible_repair_success"])
         self.assertIn(
+            "keep_later_complete_take_for_de_shi_duplicate",
+            [action["decision"] for action in result.report["final_visible_repair_actions"]],
+        )
+        self.assertNotIn(
             "bridge_omitted_source_tail_and_trim_de_shi_duplicate",
             [action["decision"] for action in result.report["final_visible_repair_actions"]],
         )
-        self.assertEqual(result.final_timeline[0].text, "你嘲笑嘉豪是对自己人")
-        self.assertEqual(result.final_timeline[1].text, "的规训")
-        self.assertEqual(result.final_timeline[0].word_ids, ["w001", "w002", "w003", "w004", "w005", "w006", "w007"])
-        self.assertEqual(result.final_timeline[1].word_ids, ["w013", "w014"])
-        self.assertEqual([caption.text for caption in result.captions], ["你嘲笑嘉豪是对自己人的规训"])
+        self.assertEqual(result.final_timeline[0].text, "你嘲笑嘉豪")
+        self.assertEqual(result.final_timeline[1].text, "是对自己人的规训")
+        self.assertEqual(result.final_timeline[0].word_ids, ["w001", "w002", "w003"])
+        self.assertEqual(result.final_timeline[1].word_ids, ["w009", "w010", "w011", "w012", "w013", "w014"])
+        self.assertEqual([caption.text for caption in result.captions], ["你嘲笑嘉豪", "是对自己人的规训"])
+
+    def test_de_shi_bridge_suffix_is_not_dropped_as_isolated_junk_before_next_caption(self) -> None:
+        rows = [
+            ("w001", "你", 0, 200_000),
+            ("w002", "嘲笑", 240_000, 480_000),
+            ("w003", "嘉豪", 560_000, 840_000),
+            ("w004", "是", 1_000_000, 1_160_000),
+            ("w005", "对", 1_160_000, 1_320_000),
+            ("w006", "自己", 1_320_000, 1_520_000),
+            ("w007", "人", 1_520_000, 1_640_000),
+            ("w008", "的", 1_640_000, 1_800_000),
+            ("w009", "是", 2_000_000, 2_160_000),
+            ("w010", "对", 2_160_000, 2_320_000),
+            ("w011", "自己", 2_320_000, 2_520_000),
+            ("w012", "人", 2_520_000, 2_640_000),
+            ("w013", "的", 2_640_000, 2_800_000),
+            ("w014", "规训", 2_840_000, 3_120_000),
+            ("w015", "你其实是在嘲笑年少时期的自己", 4_200_000, 5_600_000),
+        ]
+        source_graph = _graph_for_single_subtitle_words(rows)
+        renderer = SubtitleRenderer()
+        timeline = [
+            replace(
+                _segment(1, 0, 840_000),
+                source_material_id="main",
+                source_segment_id="primary_window",
+                source_start_us=0,
+                source_end_us=840_000,
+                target_start_us=0,
+                target_end_us=840_000,
+                word_ids=["w001", "w002", "w003"],
+                text="你嘲笑嘉豪",
+            ),
+            replace(
+                _segment(2, 840_000, 2_320_000),
+                source_material_id="main",
+                source_segment_id="primary_window",
+                source_start_us=1_640_000,
+                source_end_us=3_120_000,
+                target_start_us=840_000,
+                target_end_us=2_320_000,
+                word_ids=["w008", "w009", "w010", "w011", "w012", "w013", "w014"],
+                text="的是对自己人的规训",
+            ),
+            replace(
+                _segment(3, 2_320_000, 3_720_000),
+                source_material_id="main",
+                source_segment_id="primary_window",
+                source_start_us=4_200_000,
+                source_end_us=5_600_000,
+                target_start_us=2_320_000,
+                target_end_us=3_720_000,
+                word_ids=["w015"],
+                text="你其实是在嘲笑年少时期的自己",
+            ),
+        ]
+        captions = renderer.render(timeline, source_graph)
+
+        result = repair_final_visible_caption_issues(
+            final_timeline=timeline,
+            captions=captions,
+            source_graph=source_graph,
+            render_captions=lambda repaired: renderer.render(repaired, source_graph),
+        )
+
+        self.assertTrue(result.report["final_visible_repair_success"])
+        actions = result.report["final_visible_repair_actions"]
+        self.assertIn("keep_later_complete_take_for_de_shi_duplicate", [action["decision"] for action in actions])
+        self.assertNotIn(
+            "的规训",
+            [
+                action.get("junk_text")
+                for action in actions
+                if action["decision"] == "drop_isolated_junk_segment"
+            ],
+        )
+        self.assertEqual([segment.text for segment in result.final_timeline], ["你嘲笑嘉豪", "是对自己人的规训", "你其实是在嘲笑年少时期的自己"])
+        self.assertEqual([caption.text for caption in result.captions], ["你嘲笑嘉豪", "是对自己人的规训", "你其实是在嘲笑年少时期的自己"])
 
     def test_final_visible_drops_isolated_semantic_junk_caption(self) -> None:
         rows = [
@@ -1785,6 +1906,64 @@ class ArollV21QualityGateTests(unittest.TestCase):
         self.assertIn("drop_isolated_junk_segment", [action["decision"] for action in result.report["final_visible_repair_actions"]])
         self.assertNotIn("交配权", [segment.text for segment in result.final_timeline])
         self.assertNotIn("交配权", [caption.text for caption in result.captions])
+
+    def test_final_visible_keeps_four_char_isolated_content_phrase(self) -> None:
+        rows = [
+            ("w001", "才导致国男在婚恋市场上", 0, 1_200_000),
+            ("w002", "举步维艰", 1_600_000, 2_280_000),
+            ("w003", "最后只能像一个小丑", 2_720_000, 4_000_000),
+        ]
+        source_graph = _graph_for_single_subtitle_words(rows)
+        renderer = SubtitleRenderer()
+        timeline = [
+            replace(
+                _segment(1, 0, 1_200_000),
+                source_material_id="main",
+                source_segment_id="primary_window",
+                source_start_us=0,
+                source_end_us=1_200_000,
+                word_ids=["w001"],
+                text="才导致国男在婚恋市场上",
+            ),
+            replace(
+                _segment(2, 1_200_000, 1_880_000),
+                source_material_id="main",
+                source_segment_id="primary_window",
+                source_start_us=1_600_000,
+                source_end_us=2_280_000,
+                word_ids=["w002"],
+                text="举步维艰",
+            ),
+            replace(
+                _segment(3, 1_880_000, 3_160_000),
+                source_material_id="main",
+                source_segment_id="primary_window",
+                source_start_us=2_720_000,
+                source_end_us=4_000_000,
+                word_ids=["w003"],
+                text="最后只能像一个小丑",
+            ),
+        ]
+        captions = renderer.render(timeline, source_graph)
+
+        result = repair_final_visible_caption_issues(
+            final_timeline=timeline,
+            captions=captions,
+            source_graph=source_graph,
+            render_captions=lambda repaired: renderer.render(repaired, source_graph),
+        )
+
+        self.assertTrue(result.report["final_visible_repair_success"])
+        self.assertNotIn(
+            "举步维艰",
+            [
+                action.get("junk_text")
+                for action in result.report["final_visible_repair_actions"]
+                if action["decision"] in {"drop_isolated_junk_segment", "trim_isolated_junk_words"}
+            ],
+        )
+        self.assertIn("举步维艰", [segment.text for segment in result.final_timeline])
+        self.assertIn("举步维艰", [caption.text for caption in result.captions])
 
     def test_final_visible_trims_isolated_junk_suffix_from_shared_segment(self) -> None:
         rows = [
@@ -1918,8 +2097,15 @@ class ArollV21QualityGateTests(unittest.TestCase):
             "trim_same_segment_de_duplicate_prefix",
             [action["decision"] for action in result.report["final_visible_repair_actions"]],
         )
-        self.assertEqual(result.final_timeline[0].text, "全是provider的流水账")
-        self.assertEqual(result.final_timeline[0].word_ids, ["w001", "w002", "w003", "w008", "w009"])
+        self.assertEqual([segment.text for segment in result.final_timeline], ["全是provider", "的流水账"])
+        self.assertEqual(result.final_timeline[0].word_ids, ["w001", "w002", "w003"])
+        self.assertEqual(result.final_timeline[1].word_ids, ["w008", "w009"])
+        self.assertEqual([caption.text for caption in result.captions], ["全是provider的流水账"])
+        self.assertEqual(result.captions[0].timeline_segment_ids, ["v21_seg_000001", "v21_seg_000001_split_001"])
+        _, visual = VisualPacingNormalizer().normalize(result.final_timeline, source_graph)
+        self.assertTrue(visual["visual_merge_safety_gate_passed"])
+        self.assertEqual(visual["unsafe_merge_group_count"], 0)
+        self.assertEqual(visual["dropped_content_reintroduced_count"], 0)
 
     def test_final_visible_moves_selected_source_boundary_prefix_from_previous_segment(self) -> None:
         rows = [
@@ -2153,7 +2339,7 @@ class ArollV21QualityGateTests(unittest.TestCase):
         )
         self.assertGreaterEqual(result.report["final_visible_repair_action_count"], 4)
 
-    def test_renderer_repairs_generic_disjoint_visible_repeats_before_gate(self) -> None:
+    def test_renderer_preserves_generic_disjoint_visible_repeats_for_timeline_repair(self) -> None:
         source_graph = _graph_for_visual_merge_rows(
             [
                 ("w001", "就国南", 0, 640_000),
@@ -2174,11 +2360,12 @@ class ArollV21QualityGateTests(unittest.TestCase):
         captions = SubtitleRenderer().render(segments, source_graph)
         gate = build_final_caption_visible_repeat_gate(captions)
 
-        self.assertEqual([caption.text for caption in captions], ["就国南就只会内斗"])
-        self.assertEqual(gate["visible_repeat_candidate_count"], 0)
-        self.assertTrue(gate["gate_passed"], gate)
+        self.assertEqual([caption.text for caption in captions], ["就国南", "就国南就只会内斗"])
+        self.assertEqual([caption.word_ids for caption in captions], [["w001"], ["w002"]])
+        self.assertGreaterEqual(gate["visible_repeat_candidate_count"], 1)
+        self.assertFalse(gate["gate_passed"], gate)
 
-    def test_final_caption_repeat_gate_does_not_depend_on_high_cluster_only(self) -> None:
+    def test_final_caption_repeat_gate_classifies_distant_short_concept_without_blocking(self) -> None:
         caption_gate = build_final_caption_visible_repeat_gate(
             [
                 _caption(1, "v21_seg_000001", 0, 700_000, text="就是在"),
@@ -2200,15 +2387,20 @@ class ArollV21QualityGateTests(unittest.TestCase):
                 "visual_pacing_executed": True,
                 "visual_merge_safety_gate_passed": True,
             },
+            semantic_adjudication_gate=_semantic_gate_ok(),
             caption_alignment_gate={"gate_passed": True, "blocker_codes": []},
             ready_for_user_manual_qc_preconditions_passed=True,
         )
 
-        self.assertFalse(quality["gate_passed"])
-        self.assertIn("V21_FINAL_CAPTION_VISIBLE_REPEAT_GATE_FAILED", quality["blocker_codes"])
+        self.assertTrue(quality["gate_passed"])
+        self.assertEqual(caption_gate["containment_repeat_count"], 0)
+        self.assertEqual(caption_gate["containment_repeat_raw_count"], 1)
+        self.assertEqual(caption_gate["visible_repeat_allow_candidate_count"], 1)
+        self.assertEqual(caption_gate["repeat_classification_candidates"][0]["classification"], "short_concept_reuse")
+        self.assertNotIn("V21_FINAL_CAPTION_VISIBLE_REPEAT_GATE_FAILED", quality["blocker_codes"])
         self.assertEqual(quality["final_repeat_convergence_gate"]["final_repeat_high_count_after"], 0)
 
-    def test_failure_sample_visible_repeat_candidates_block_ready(self) -> None:
+    def test_failure_sample_visible_repeat_candidates_are_classified_without_blocking_ready(self) -> None:
         caption_gate = build_final_caption_visible_repeat_gate(
             [
                 _caption(1, "v21_seg_000001", 0, 640_000, text="就国南"),
@@ -2227,14 +2419,24 @@ class ArollV21QualityGateTests(unittest.TestCase):
                 "visual_pacing_executed": True,
                 "visual_merge_safety_gate_passed": True,
             },
+            semantic_adjudication_gate=_semantic_gate_ok(),
             caption_alignment_gate={"gate_passed": True, "blocker_codes": []},
             ready_for_user_manual_qc_preconditions_passed=True,
         )
 
-        self.assertFalse(quality["gate_passed"])
-        self.assertEqual(caption_gate["containment_repeat_count"], 2)
-        self.assertGreaterEqual(caption_gate["visible_repeat_candidate_count"], 2)
-        self.assertIn("V21_FINAL_CAPTION_VISIBLE_REPEAT_GATE_FAILED", quality["blocker_codes"])
+        self.assertTrue(quality["gate_passed"])
+        self.assertEqual(caption_gate["containment_repeat_count"], 0)
+        self.assertEqual(caption_gate["containment_repeat_raw_count"], 2)
+        self.assertEqual(caption_gate["visible_repeat_candidate_count"], 0)
+        self.assertGreaterEqual(caption_gate["visible_repeat_allow_candidate_count"], 2)
+        self.assertGreaterEqual(caption_gate["visible_repeat_warning_candidate_count"], 1)
+        self.assertNotIn("V21_FINAL_CAPTION_VISIBLE_REPEAT_GATE_FAILED", quality["blocker_codes"])
+        self.assertTrue(
+            all(
+                row["distance_kind"] == "distant" and row["severity"] != "fatal"
+                for row in caption_gate["repeat_classification_candidates"]
+            )
+        )
 
     def test_repeat_convergence_does_not_zero_report_without_detector(self) -> None:
         report = build_final_repeat_convergence_report(
@@ -2303,6 +2505,181 @@ class ArollV21QualityGateTests(unittest.TestCase):
         self.assertLess(len(normalized), len(initial))
         self.assertTrue(visual["gate_passed"])
         self.assertTrue(visual["visual_merge_safety_gate_passed"])
+
+    def test_visual_pacing_splits_large_intra_segment_word_gap(self) -> None:
+        rows = [
+            ("w001", "前半句", 0, 1_300_000),
+            ("w002", "后半句", 1_800_000, 3_100_000),
+        ]
+        source_graph = _graph_for_single_subtitle_words(rows)
+        initial = [
+            replace(
+                _segment(1, 0, 3_100_000),
+                source_material_id="main",
+                source_segment_id="primary_window",
+                source_start_us=0,
+                source_end_us=3_100_000,
+                target_start_us=0,
+                target_end_us=3_100_000,
+                word_ids=["w001", "w002"],
+                text="前半句后半句",
+            )
+        ]
+
+        normalized, visual = VisualPacingNormalizer().normalize(initial, source_graph)
+
+        self.assertEqual([segment.text for segment in normalized], ["前半句", "后半句"])
+        self.assertEqual([(segment.source_start_us, segment.source_end_us) for segment in normalized], [(0, 1_300_000), (1_800_000, 3_100_000)])
+        self.assertEqual([(segment.target_start_us, segment.target_end_us) for segment in normalized], [(0, 1_300_000), (1_300_000, 2_600_000)])
+        self.assertTrue(visual["gate_passed"])
+        self.assertEqual(visual["large_intra_segment_gap_candidate_count"], 1)
+        self.assertEqual(visual["large_intra_segment_gap_split_count"], 1)
+        self.assertEqual(visual["large_intra_segment_gap_max_us"], 500_000)
+        self.assertEqual(visual["large_intra_segment_gap_candidates"][0]["reason"], "large_intra_segment_gap_split")
+
+    def test_visual_pacing_drops_boundary_filler_isolated_by_large_intra_segment_gap(self) -> None:
+        rows = [
+            ("w001", "咳", 0, 800_000),
+            ("w002", "立刻给老子关了", 2_066_666, 3_226_666),
+        ]
+        source_graph = _graph_for_single_subtitle_words(rows)
+        initial = [
+            replace(
+                _segment(1, 0, 3_226_666),
+                source_material_id="main",
+                source_segment_id="primary_window",
+                source_start_us=0,
+                source_end_us=3_226_666,
+                target_start_us=0,
+                target_end_us=3_226_666,
+                word_ids=["w001", "w002"],
+                text="咳立刻给老子关了",
+            )
+        ]
+
+        normalized, visual = VisualPacingNormalizer().normalize(initial, source_graph)
+
+        self.assertEqual([segment.text for segment in normalized], ["立刻给老子关了"])
+        self.assertEqual(normalized[0].source_start_us, 2_066_666)
+        self.assertEqual(normalized[0].target_start_us, 0)
+        self.assertEqual(normalized[0].target_end_us, 1_160_000)
+        self.assertTrue(visual["gate_passed"])
+        self.assertEqual(visual["large_intra_segment_gap_candidate_count"], 1)
+        self.assertEqual(visual["large_intra_segment_gap_split_count"], 1)
+        self.assertEqual(
+            visual["large_intra_segment_gap_splits"][0]["dropped_boundary_filler_word_ids"],
+            ["w001"],
+        )
+
+    def test_visual_pacing_does_not_split_single_char_content_side(self) -> None:
+        rows = [
+            ("w001", "我", 0, 800_000),
+            ("w002", "继续说完整内容", 1_400_000, 2_800_000),
+        ]
+        source_graph = _graph_for_single_subtitle_words(rows)
+        initial = [
+            replace(
+                _segment(1, 0, 2_800_000),
+                source_material_id="main",
+                source_segment_id="primary_window",
+                source_start_us=0,
+                source_end_us=2_800_000,
+                target_start_us=0,
+                target_end_us=2_800_000,
+                word_ids=["w001", "w002"],
+                text="我继续说完整内容",
+            )
+        ]
+
+        normalized, visual = VisualPacingNormalizer().normalize(initial, source_graph)
+
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(normalized[0].text, "我继续说完整内容")
+        self.assertEqual(visual["large_intra_segment_gap_candidate_count"], 1)
+        self.assertEqual(visual["large_intra_segment_gap_split_count"], 0)
+        self.assertEqual(visual["large_intra_segment_gap_candidates"][0]["reason"], "single_char_left_side_would_survive")
+
+    def test_visual_pacing_keeps_normal_intra_segment_breath(self) -> None:
+        rows = [
+            ("w001", "前半句", 0, 1_300_000),
+            ("w002", "后半句", 1_520_000, 2_820_000),
+        ]
+        source_graph = _graph_for_single_subtitle_words(rows)
+        initial = [
+            replace(
+                _segment(1, 0, 2_820_000),
+                source_material_id="main",
+                source_segment_id="primary_window",
+                source_start_us=0,
+                source_end_us=2_820_000,
+                target_start_us=0,
+                target_end_us=2_820_000,
+                word_ids=["w001", "w002"],
+                text="前半句后半句",
+            )
+        ]
+
+        normalized, visual = VisualPacingNormalizer().normalize(initial, source_graph)
+
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(normalized[0].source_start_us, 0)
+        self.assertEqual(normalized[0].source_end_us, 2_820_000)
+        self.assertEqual(visual["large_intra_segment_gap_candidate_count"], 0)
+        self.assertEqual(visual["large_intra_segment_gap_split_count"], 0)
+
+    def test_visual_pacing_reports_medium_intra_segment_gap_without_splitting(self) -> None:
+        rows = [
+            ("w001", "前半句", 0, 1_300_000),
+            ("w002", "后半句", 1_650_000, 2_950_000),
+        ]
+        source_graph = _graph_for_single_subtitle_words(rows)
+        initial = [
+            replace(
+                _segment(1, 0, 2_950_000),
+                source_material_id="main",
+                source_segment_id="primary_window",
+                source_start_us=0,
+                source_end_us=2_950_000,
+                target_start_us=0,
+                target_end_us=2_950_000,
+                word_ids=["w001", "w002"],
+                text="前半句后半句",
+            )
+        ]
+
+        normalized, visual = VisualPacingNormalizer().normalize(initial, source_graph)
+
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(visual["large_intra_segment_gap_candidate_count"], 1)
+        self.assertEqual(visual["large_intra_segment_gap_split_count"], 0)
+        self.assertEqual(visual["large_intra_segment_gap_candidates"][0]["reason"], "below_split_threshold")
+
+    def test_visual_pacing_does_not_split_large_gap_when_side_too_short(self) -> None:
+        rows = [
+            ("w001", "短句", 0, 240_000),
+            ("w002", "后面完整表达", 800_000, 2_200_000),
+        ]
+        source_graph = _graph_for_single_subtitle_words(rows)
+        initial = [
+            replace(
+                _segment(1, 0, 2_200_000),
+                source_material_id="main",
+                source_segment_id="primary_window",
+                source_start_us=0,
+                source_end_us=2_200_000,
+                target_start_us=0,
+                target_end_us=2_200_000,
+                word_ids=["w001", "w002"],
+                text="短句后面完整表达",
+            )
+        ]
+
+        normalized, visual = VisualPacingNormalizer().normalize(initial, source_graph)
+
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(visual["large_intra_segment_gap_candidate_count"], 1)
+        self.assertEqual(visual["large_intra_segment_gap_split_count"], 0)
+        self.assertEqual(visual["large_intra_segment_gap_candidates"][0]["reason"], "left_side_too_short")
 
     def test_residual_visual_short_segments_merge_when_safe(self) -> None:
         source_graph = _graph_for_visual_merge_rows(
@@ -2776,6 +3153,62 @@ class ArollV21QualityGateTests(unittest.TestCase):
         self.assertEqual([caption.text for caption in captions], ["就是在", "亲手摧毁男性"])
         self.assertEqual(visual["visual_pacing_boundary_overlap_dropped_word_count"], 2)
 
+    def test_visual_pacing_merges_hard_too_short_residual_created_by_boundary_cleanup(self) -> None:
+        materials, text_segments = _template_rows()
+        rows = [
+            ("w_000001", "反而", 0, 280_000, 1, "s001"),
+            ("w_000002", "亲手", 280_000, 580_000, 1, "s001"),
+            ("w_000003", "摧毁", 580_000, 880_000, 1, "s001"),
+            ("w_000004", "亲手", 280_000, 580_000, 2, "s002"),
+            ("w_000005", "摧毁", 580_000, 880_000, 2, "s002"),
+            ("w_000006", "后续", 880_000, 1_180_000, 2, "s002"),
+        ]
+        words = [
+            {
+                "word_id": word_id,
+                "word_text": text,
+                "start_us": start,
+                "end_us": end,
+                "subtitle_index": subtitle_index,
+                "subtitle_uid": subtitle_uid,
+            }
+            for word_id, text, start, end, subtitle_index, subtitle_uid in rows
+        ]
+        engine = ArollEngine()
+        source_graph = engine.ingest.build_source_graph(
+            word_timeline=words,
+            subtitles=[
+                {
+                    "subtitle_uid": "s001",
+                    "subtitle_index": 1,
+                    "text": "反而亲手摧毁",
+                    "word_ids": ["w_000001", "w_000002", "w_000003"],
+                },
+                {
+                    "subtitle_uid": "s002",
+                    "subtitle_index": 2,
+                    "text": "亲手摧毁后续",
+                    "word_ids": ["w_000004", "w_000005", "w_000006"],
+                },
+            ],
+            source_segments=[{"id": "clip", "material_id": "main", "source_start_us": 0, "source_end_us": 1_200_000}],
+            text_materials=materials,
+            text_segments=text_segments,
+        )
+        initial = [
+            replace(_segment(1, 0, 880_000), text="反而亲手摧毁", word_ids=["w_000001", "w_000002", "w_000003"]),
+            replace(_segment(2, 280_000, 1_180_000), text="亲手摧毁后续", word_ids=["w_000004", "w_000005", "w_000006"]),
+        ]
+
+        normalized, visual = VisualPacingNormalizer().normalize(initial, source_graph)
+        captions = engine.renderer.render(normalized, source_graph)
+        alignment = build_caption_alignment_report(final_timeline=normalized, captions=captions)
+
+        self.assertEqual([segment.text for segment in normalized], ["反而亲手摧毁后续"])
+        self.assertEqual(visual["visual_pacing_boundary_overlap_dropped_word_count"], 2)
+        self.assertEqual(visual["visual_short_segment_count_lt_1200ms_after_blocking"], 0)
+        self.assertEqual(alignment["caption_too_short_count"], 0)
+
     def test_caption_uses_spoken_target_span(self) -> None:
         report = build_caption_alignment_report(
             final_timeline=[_segment(1, 0, 1_000_000)],
@@ -2796,6 +3229,27 @@ class ArollV21QualityGateTests(unittest.TestCase):
         self.assertFalse(quality_report["gate_passed"])
         self.assertIn("V21_CAPTION_OUTSIDE_VIDEO_SEGMENT", quality_report["blocker_codes"])
         self.assertIn("V21_ONE_CHAR_CAPTION", quality_report["blocker_codes"])
+
+    def test_caption_alignment_blocks_uncaptioned_final_timeline_words(self) -> None:
+        segment = replace(
+            _segment(1, 0, 1_200_000),
+            word_ids=["w1", "w2"],
+            text="前段后段",
+        )
+        caption = replace(
+            _caption(1, "v21_seg_000001", 0, 600_000, text="前段"),
+            word_ids=["w1"],
+        )
+
+        report = build_caption_alignment_report(final_timeline=[segment], captions=[caption])
+        quality = build_quality_gate_report(caption_alignment_gate=report)
+
+        self.assertFalse(report["gate_passed"])
+        self.assertEqual(report["prewrite_uncaptioned_spoken_word_count"], 1)
+        self.assertEqual(report["prewrite_uncaptioned_spoken_segment_count"], 1)
+        self.assertEqual(report["prewrite_uncaptioned_spoken_word_rows"][0]["missing_word_ids"], ["w2"])
+        self.assertIn("V21_PREWRITE_UNCAPTIONED_SPOKEN_WORDS", report["blocker_codes"])
+        self.assertIn("V21_PREWRITE_UNCAPTIONED_SPOKEN_WORDS", quality["blocker_codes"])
 
     def test_caption_alignment_uses_containing_video_segment_not_self_final_segment(self) -> None:
         caption = CaptionRenderUnit(
@@ -2864,21 +3318,23 @@ class ArollV21QualityGateTests(unittest.TestCase):
         self.assertEqual(report["visible_caption_track_count"], 2)
         self.assertIn("V21_CAPTION_GUI_TRACK_GATE_FAILED", quality["blocker_codes"])
 
-    def test_subtitle_readability_blocks_many_tiny_captions(self) -> None:
+    def test_subtitle_readability_allows_many_valid_tiny_captions(self) -> None:
         captions = [
             _caption(index, "v21_seg_000001", (index - 1) * 600_000, index * 600_000, text=f"短{index}")
             for index in range(1, 8)
         ]
 
         report = build_caption_alignment_report(
-            final_timeline=[_segment(1, 0, 5_000_000)],
+            final_timeline=[replace(_segment(1, 0, 5_000_000), word_ids=[f"w{index}" for index in range(1, 8)])],
             captions=captions,
         )
 
-        self.assertFalse(report["gate_passed"])
+        self.assertTrue(report["gate_passed"])
         self.assertEqual(report["captions_le_3_chars"], 7)
         self.assertEqual(report["captions_le_3_chars_cap"], 3)
-        self.assertIn("V21_SUBTITLE_READABILITY_GATE_FAILED", report["blocker_codes"])
+        self.assertEqual(report["tiny_caption_fatal_count"], 0)
+        self.assertEqual(report["tiny_caption_residual_density_window_count"], 0)
+        self.assertNotIn("V21_SUBTITLE_READABILITY_GATE_FAILED", report["blocker_codes"])
 
     def test_subtitle_readability_blocks_hard_max_chars(self) -> None:
         report = build_caption_alignment_report(
@@ -4654,16 +5110,16 @@ class ArollV21QualityGateTests(unittest.TestCase):
     def test_final_visible_ngram_still_blocks_true_visible_repeat(self) -> None:
         gate = build_final_caption_visible_repeat_gate(
             [
-                _caption(1, "v21_seg_000001", 0, 1_000_000, text="甲后台私信乙"),
+                _caption(1, "v21_seg_000001", 0, 1_000_000, text="甲后台私信"),
                 _caption(2, "v21_seg_000002", 1_100_000, 2_100_000, text="后台私信丙丁"),
             ]
         )
 
         self.assertFalse(gate["gate_passed"])
-        self.assertEqual(gate["ngram_repeat_count"], 1)
+        self.assertGreaterEqual(gate["visible_repeat_candidate_count"], 1)
         self.assertIn("V21_FINAL_CAPTION_VISIBLE_REPEAT_GATE_FAILED", gate["blocker_codes"])
 
-    def test_final_visible_ngram_latest_seen_blocks_after_earlier_common_middle_phrase(self) -> None:
+    def test_final_visible_ngram_latest_seen_warns_after_earlier_common_middle_phrase(self) -> None:
         gate = build_final_caption_visible_repeat_gate(
             [
                 _caption(1, "v21_seg_000001", 0, 1_000_000, text="他的后台私信全是消息"),
@@ -4672,9 +5128,10 @@ class ArollV21QualityGateTests(unittest.TestCase):
             ]
         )
 
-        self.assertFalse(gate["gate_passed"])
-        self.assertEqual(gate["ngram_repeat_count"], 1)
-        candidate = gate["ngram_repeat_candidates"][0]
+        self.assertTrue(gate["gate_passed"], gate)
+        self.assertEqual(gate["ngram_repeat_count"], 0)
+        self.assertGreaterEqual(gate["ngram_repeat_raw_count"], 1)
+        candidate = gate["visible_repeat_warning_candidates"][0]
         self.assertEqual(candidate["caption_id"], "v21_cap_000002")
         self.assertEqual(candidate["related_caption_id"], "v21_cap_000003")
 

@@ -2,7 +2,7 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$DraftDir,
 
-  [string]$RunRoot = "",
+  [string]$RunRoot = "D:\auto_clip_runtime\draft_rollback_runs",
 
   [string]$JyDraftc = "",
 
@@ -32,14 +32,6 @@ $ErrorActionPreference = "Stop"
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-if ([string]::IsNullOrWhiteSpace($RunRoot)) {
-  $runtimeRoot = [string]$env:AUTO_CLIP_RUNTIME_DIR
-  if ([string]::IsNullOrWhiteSpace($runtimeRoot)) {
-    $runtimeRoot = Join-Path $env:USERPROFILE ".auto_clip_runtime"
-  }
-  $RunRoot = Join-Path $runtimeRoot "draft_rollback_runs"
-}
-
 function Resolve-ExistingPath([string]$PathValue, [string]$Label) {
   if (-not $PathValue) {
     throw "$Label is empty"
@@ -59,9 +51,9 @@ function Get-DefaultJyDraftc {
   }
   $repoRoot = Split-Path -Parent $PSScriptRoot
   $suiteRoot = Split-Path -Parent $repoRoot
-  $bundled = Join-Path $suiteRoot "jianying-ai-image-aligner\vendor\jy-draftc-bin\jy-draftc-amd64-windows\jy-draftc.exe"
-  if (Test-Path -LiteralPath $bundled) {
-    return $bundled
+  $known = Join-Path $suiteRoot "jianying-ai-image-aligner\vendor\jy-draftc-bin\jy-draftc-amd64-windows\jy-draftc.exe"
+  if (Test-Path -LiteralPath $known) {
+    return $known
   }
   return ""
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +18,7 @@ from aroll_runtime_paths import (
 
 from tests.test_aroll_v21_full_chain_internal_self_check import ExternalWordTimelineAdapter
 from tests.test_aroll_v21_sacrificial_write_override import create_disposable_draft, fake_real_draft_result, fake_real_writeback
+from tools.export_aroll_v21_uat_capsule import parse_args as parse_export_capsule_args
 
 
 class ArollV21WindowsPathContractsTests(unittest.TestCase):
@@ -93,6 +95,19 @@ class ArollV21WindowsPathContractsTests(unittest.TestCase):
         self.assertNotIn("arll", source)
         self.assertIn("default=DEFAULT_AUDIT_ROOT", source)
         self.assertIn('"reports": ("aroll_v21_audits",)', source)
+
+    def test_uat_capsule_export_defaults_to_runtime_test_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_out = Path(tmp) / "runtime test outputs"
+            with patch.dict("os.environ", {"AUTO_CLIP_AROLL_TEST_OUTPUTS_DIR": str(runtime_out)}, clear=False), patch.object(
+                sys,
+                "argv",
+                ["export_aroll_v21_uat_capsule.py", "--run-dir", str(Path(tmp) / "run"), "--case-id", "case-001"],
+            ):
+                args = parse_export_capsule_args()
+
+            self.assertEqual(args.out_root, runtime_out / "uat_capsules")
+            self.assertNotIn("fixtures", args.out_root.parts)
 
 
 if __name__ == "__main__":

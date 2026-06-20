@@ -166,14 +166,21 @@ class ReadOnlyValidators:
     def _coverage(self, final_timeline: list[FinalTimelineSegment], captions: list[CaptionRenderUnit]) -> dict[str, Any]:
         segment_ids = {segment.segment_id for segment in final_timeline}
         caption_segment_ids = {segment_id for caption in captions for segment_id in caption.timeline_segment_ids}
+        final_word_ids = {str(word_id) for segment in final_timeline for word_id in segment.word_ids}
+        caption_word_ids = {str(word_id) for caption in captions for word_id in caption.word_ids}
+        missing_final_word_ids = sorted(final_word_ids - caption_word_ids)
         captions_have_words = all(bool(caption.word_ids) for caption in captions)
         return {
             "all_final_segments_have_word_ids": all(bool(segment.word_ids) for segment in final_timeline),
             "all_captions_derived_from_final_timeline": caption_segment_ids <= segment_ids and captions_have_words,
+            "all_final_timeline_words_captioned": not missing_final_word_ids,
             "missing_caption_segment_ids": sorted(caption_segment_ids - segment_ids),
+            "missing_final_timeline_caption_word_ids": missing_final_word_ids[:50],
+            "missing_final_timeline_caption_word_count": len(missing_final_word_ids),
             "subtitle_coverage_gate_passed": all(bool(segment.word_ids) for segment in final_timeline)
             and caption_segment_ids <= segment_ids
-            and captions_have_words,
+            and captions_have_words
+            and not missing_final_word_ids,
         }
 
     def _style(self, source_graph: CanonicalSourceGraph, material_write_plan: dict[str, Any]) -> dict[str, Any]:

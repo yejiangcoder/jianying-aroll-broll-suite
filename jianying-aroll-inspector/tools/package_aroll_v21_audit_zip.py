@@ -14,6 +14,8 @@ INCLUDE_ROOTS = {
 }
 
 INCLUDE_FILES = {
+    ".gitattributes",
+    "pytest.ini",
     "run_aroll_v21_operator.ps1",
     "README.md",
     "README_UAT.md",
@@ -30,8 +32,20 @@ EXCLUDED_DIRS = {
     "__pycache__",
     ".venv",
     "venv",
+    ".mypy_cache",
+    ".ruff_cache",
+    "node_modules",
     "runtime",
     "run_dir",
+    "release",
+    "dev_snapshot",
+    "reports",
+    "logs",
+    "exports",
+    "temp",
+    "cache",
+    "ai_images",
+    "outputs",
 }
 
 EXCLUDED_SUFFIXES = {
@@ -50,6 +64,10 @@ EXCLUDED_SUFFIXES = {
 
 EXCLUDED_NAMES = {
     ".env",
+    ".env.local",
+    "deepseek.yaml",
+    "deepseek.local.yaml",
+    "runtime_paths.local.yaml",
     "draft_content.json",
     "migration_dry_run_report.json",
     "migration_dry_run_report.md",
@@ -67,6 +85,8 @@ def should_include(path: Path, repo_root: Path) -> bool:
     rel = path.relative_to(repo_root)
     parts = set(rel.parts)
     if parts & EXCLUDED_DIRS:
+        return False
+    if rel.parts[0] == "config" and (path.name == "deepseek.yaml" or path.name.endswith(".local.yaml")):
         return False
     if path.name in EXCLUDED_NAMES:
         return False

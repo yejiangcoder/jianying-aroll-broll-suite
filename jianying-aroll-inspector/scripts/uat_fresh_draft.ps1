@@ -1,6 +1,6 @@
 param(
   [string]$DraftDir = "",
-  [string]$RunRoot = "",
+  [string]$RunRoot = "D:\auto_clip_runtime\aroll_v21_uat_runs",
   [ValidateSet("auto", "deterministic-baseline", "semantic-requests-only", "deepseek", "fail-closed", "default")]
   [string]$SemanticMode = "auto",
   [string]$ReadyRunDir = "",
@@ -10,14 +10,6 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-
-if ([string]::IsNullOrWhiteSpace($RunRoot)) {
-  $runtimeRoot = [string]$env:AUTO_CLIP_RUNTIME_DIR
-  if ([string]::IsNullOrWhiteSpace($runtimeRoot)) {
-    $runtimeRoot = Join-Path $env:USERPROFILE ".auto_clip_runtime"
-  }
-  $RunRoot = Join-Path $runtimeRoot "aroll_v21_uat_runs"
-}
 
 function Read-JsonFile([string]$Path) {
   $resolvedPath = $Path
@@ -99,11 +91,7 @@ function Assert-True([bool]$Condition, [string]$Message) {
 function Resolve-PinnedJianyingInstallDir {
   $pinRoot = [string]$env:JY_VERSION_PIN_ROOT
   if (-not $pinRoot) {
-    $runtimeRoot = [string]$env:AUTO_CLIP_RUNTIME_DIR
-    if ([string]::IsNullOrWhiteSpace($runtimeRoot)) {
-      $runtimeRoot = Join-Path $env:USERPROFILE ".auto_clip_runtime"
-    }
-    $pinRoot = Join-Path $runtimeRoot "jianying_version_pin"
+    $pinRoot = "D:\auto_clip_runtime\jianying_version_pin"
   }
   if (-not (Test-Path -LiteralPath $pinRoot)) {
     return ""
@@ -146,7 +134,6 @@ function Resolve-JianyingInstallDir {
       $roots += $parent
     }
   }
-  $roots += "D:\JianyingPro"
   $roots = $roots | Where-Object { $_ } | Select-Object -Unique
 
   $candidates = @()

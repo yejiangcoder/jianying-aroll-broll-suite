@@ -120,12 +120,12 @@ def build_quality_gate_report(
     )
     if caption_alignment_gate is not None and caption_gui_failed:
         blocker_codes.append("V21_CAPTION_GUI_TRACK_GATE_FAILED")
-    tiny_cap = int(caption.get("captions_le_3_chars_cap") or 3)
     readability_failed = (
         not bool(caption.get("subtitle_readability_gate_passed"))
         if "subtitle_readability_gate_passed" in caption
         else (
-            int(caption.get("captions_le_3_chars") or 0) > tiny_cap
+            int(caption.get("tiny_caption_fatal_count") or 0) > 0
+            or int(caption.get("tiny_caption_residual_density_window_count") or 0) > 0
             or int(caption.get("subtitle_hard_max_char_count") or 0) > 0
             or int(caption.get("subtitle_interval_too_short_count") or 0) > 0
             or int(caption.get("subtitle_interval_too_long_count") or 0) > 0
@@ -203,15 +203,25 @@ def build_quality_gate_report(
                 "gate_passed",
                 "blocker_codes",
                 "visible_repeat_candidate_count",
+                "visible_repeat_fatal_candidate_count",
+                "visible_repeat_warning_candidate_count",
+                "visible_repeat_allow_candidate_count",
+                "repeat_classification_candidate_count",
+                "repeat_classification_candidates",
+                "visible_repeat_warning_candidates",
+                "visible_repeat_allow_candidates",
                 "containment_repeat_count",
+                "containment_repeat_raw_count",
                 "prefix_suffix_overlap_count",
                 "ngram_repeat_count",
+                "ngram_repeat_raw_count",
                 "near_duplicate_visible_caption_count",
                 "modifier_redundancy_residual_count",
                 "self_repair_aborted_phrase_count",
                 "dangling_prefix_suffix_count",
                 "semantic_garbage_or_asr_suspect_count",
                 "cross_caption_semantic_containment_count",
+                "cross_caption_semantic_containment_raw_count",
                 "restart_repeat_visible_count",
                 "visible_repeat_candidates",
                 "containment_repeat_candidates",
@@ -323,6 +333,11 @@ def build_quality_gate_report(
                 for key in (
                     "caption_too_short_count",
                     "caption_cross_primary_window_count",
+                    "prewrite_uncaptioned_spoken_word_count",
+                    "prewrite_uncaptioned_spoken_segment_count",
+                    "prewrite_uncaptioned_spoken_word_rows",
+                    "missing_final_timeline_caption_word_count",
+                    "missing_final_timeline_caption_word_ids",
                     "caption_alignment_ok",
                     "caption_gui_track_gate_passed",
                     "visible_caption_track_count",
@@ -338,6 +353,16 @@ def build_quality_gate_report(
                     "subtitle_hard_max_char_count",
                     "captions_le_3_chars",
                     "captions_le_3_chars_cap",
+                    "tiny_caption_classification_enabled",
+                    "tiny_caption_classification_count",
+                    "tiny_caption_fatal_count",
+                    "tiny_caption_warning_count",
+                    "tiny_caption_allow_count",
+                    "tiny_caption_classifications",
+                    "tiny_caption_residual_density_window_count",
+                    "tiny_caption_residual_density_windows",
+                    "tiny_caption_residual_density_window_us",
+                    "tiny_caption_residual_density_threshold",
                     "caption_density_per_minute",
                     "max_captions_in_5s",
                     "caption_burst_density_count",

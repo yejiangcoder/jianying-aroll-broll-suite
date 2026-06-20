@@ -92,7 +92,9 @@ class ArollV21QualityAlgorithmPortsTests(unittest.TestCase):
         source = "\n".join(
             [
                 (ROOT / "src" / "aroll_v21" / "quality" / "tiny_segment_classifier.py").read_text("utf-8"),
-                (ROOT / "src" / "aroll_v21" / "quality" / "visual_pacing.py").read_text("utf-8"),
+                (ROOT / "src" / "aroll_v21" / "quality" / "visual_pacing" / "normalizer.py").read_text("utf-8"),
+                (ROOT / "src" / "aroll_v21" / "quality" / "visual_pacing" / "suffix_cleanup.py").read_text("utf-8"),
+                (ROOT / "src" / "aroll_v21" / "quality" / "visual_pacing" / "cut_density.py").read_text("utf-8"),
             ]
         )
         for forbidden in ("6月15日", "6月16日", "嘉豪", "随意", "肆意", "这说明", "safe_cut_boundary_resolver"):

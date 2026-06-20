@@ -1,36 +1,36 @@
-runtime_root: "${HOME}/.auto_clip_runtime"
+runtime_root: "D:/auto_clip_runtime"
 
 aroll:
-  runs_dir: "${HOME}/.auto_clip_runtime/aroll_v21_uat_runs"
-  audits_dir: "${HOME}/.auto_clip_runtime/aroll_v21_audits"
-  test_outputs_dir: "${HOME}/.auto_clip_runtime/aroll_v21_test_outputs"
-  quality_defect_ledger_dir: "${HOME}/.auto_clip_runtime/aroll_v21_audits/quality_defect_ledger"
-  backups_dir: "${HOME}/.auto_clip_runtime/aroll_v21_backups"
+  runs_dir: "D:/auto_clip_runtime/aroll_v21_uat_runs"
+  audits_dir: "D:/auto_clip_runtime/aroll_v21_audits"
+  test_outputs_dir: "D:/auto_clip_runtime/aroll_v21_test_outputs"
+  quality_defect_ledger_dir: "D:/auto_clip_runtime/aroll_v21_audits/quality_defect_ledger"
+  backups_dir: "D:/auto_clip_runtime/aroll_v21_backups"
 
 broll:
-  design_runs_dir: "${HOME}/.auto_clip_runtime/broll/design_runs"
-  material_index_dir: "${HOME}/.auto_clip_runtime/broll/material_index"
-  downloaded_materials_dir: "${HOME}/.auto_clip_runtime/broll/downloaded_materials"
+  design_runs_dir: "D:/auto_clip_runtime/broll/design_runs"
+  material_index_dir: "D:/auto_clip_runtime/broll/material_index"
+  downloaded_materials_dir: "D:/auto_clip_runtime/broll/downloaded_materials"
 
 ai_images:
-  batches_dir: "${HOME}/.auto_clip_runtime/ai_images/batches"
-  manifests_dir: "${HOME}/.auto_clip_runtime/ai_images/manifests"
+  batches_dir: "D:/auto_clip_runtime/ai_images/batches"
+  manifests_dir: "D:/auto_clip_runtime/ai_images/manifests"
 
 drafts:
-  real_drafts_dir: "${HOME}/.auto_clip_runtime/drafts/real_drafts"
-  draft_backups_dir: "${HOME}/.auto_clip_runtime/drafts/draft_backups"
+  real_drafts_dir: "D:/auto_clip_runtime/drafts/real_drafts"
+  draft_backups_dir: "D:/auto_clip_runtime/drafts/draft_backups"
 
-exports_dir: "${HOME}/.auto_clip_runtime/exports"
-logs_dir: "${HOME}/.auto_clip_runtime/logs"
-temp_dir: "${HOME}/.auto_clip_runtime/temp"
-cache_dir: "${HOME}/.auto_clip_runtime/cache"
+exports_dir: "D:/auto_clip_runtime/exports"
+logs_dir: "D:/auto_clip_runtime/logs"
+temp_dir: "D:/auto_clip_runtime/temp"
+cache_dir: "D:/auto_clip_runtime/cache"
 
 packages:
-  release_dir: "${HOME}/.auto_clip_runtime/packages/release"
-  dev_snapshot_dir: "${HOME}/.auto_clip_runtime/packages/dev_snapshot"
+  release_dir: "D:/auto_clip_runtime/packages/release"
+  dev_snapshot_dir: "D:/auto_clip_runtime/packages/dev_snapshot"
 
 jianying:
-  aligner_root: "../jianying-ai-image-aligner"
+  aligner_root: "D:/video tools/jianying-ai-image-aligner"
 
 deepseek:
   config_path: "config/deepseek.yaml"

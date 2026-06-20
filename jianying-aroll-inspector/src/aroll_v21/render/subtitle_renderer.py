@@ -72,7 +72,11 @@ class SubtitleRenderer:
                 caption_index += 1
                 previous_caption_end = caption_end
         cleaned = _cleanup_caption_units(captions, {segment.segment_id: segment for segment in final_timeline})
+        if not _preserves_caption_word_coverage(captions, cleaned):
+            cleaned = captions
         repaired = _repair_visible_caption_repeats(cleaned)
+        if not _preserves_caption_word_coverage(cleaned, repaired):
+            repaired = cleaned
         return _renumber_captions(repaired)
 
     def _caption_word_groups(self, words):
@@ -304,7 +308,7 @@ def _repair_next_deterministic_visible_repeat(captions: list[CaptionRenderUnit])
         if reason not in DETERMINISTIC_REPEAT_REASONS:
             continue
         repaired = _repair_repeat_candidate(captions, candidate, reason)
-        if repaired is not None and len(repaired) < len(captions):
+        if repaired is not None and len(repaired) < len(captions) and _preserves_caption_word_coverage(captions, repaired):
             return repaired
     no_repair: list[CaptionRenderUnit] | None = None
     return no_repair
@@ -392,6 +396,17 @@ def _less_informative_caption_index(
     if left_duration != right_duration:
         return left_index if left_duration < right_duration else right_index
     return max(left_index, right_index)
+
+
+def _preserves_caption_word_coverage(before: list[CaptionRenderUnit], after: list[CaptionRenderUnit]) -> bool:
+    return _caption_word_id_set(before) == _caption_word_id_set(after)
+
+
+def _caption_word_id_set(captions: list[CaptionRenderUnit]) -> set[str]:
+    result: set[str] = set()
+    for caption in captions:
+        result.update(str(word_id) for word_id in caption.word_ids if str(word_id))
+    return result
 
 
 def _unique(values: list[str]) -> list[str]:

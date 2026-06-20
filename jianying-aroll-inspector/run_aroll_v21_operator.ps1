@@ -13,6 +13,8 @@ param(
 
     [string]$RunDir = "",
 
+    [string]$ReadyRunDir = "",
+
     [string]$OutputDir = "",
 
     [ValidateSet("dry-run", "write", "verify-only")]
@@ -57,6 +59,7 @@ if ($JyDraftc) { $ArgsList += @("--jy-draftc", $JyDraftc) }
 if ($WordTimelineJson) { $ArgsList += @("--word-timeline-json", $WordTimelineJson) }
 if ($SemanticDecisionsJson) { $ArgsList += @("--semantic-decisions-json", $SemanticDecisionsJson) }
 if ($PostwriteMaterialsJson) { $ArgsList += @("--postwrite-materials-json", $PostwriteMaterialsJson) }
+if ($ReadyRunDir) { $ArgsList += @("--ready-run-dir", $ReadyRunDir) }
 if ($SimulateWrite) { $ArgsList += "--simulate-write" }
 if ($Commit) { $ArgsList += "--commit" }
 if ($AllowSacrificialWriteWithoutPostwriteDecrypt) { $ArgsList += "--allow-sacrificial-write-without-postwrite-decrypt" }

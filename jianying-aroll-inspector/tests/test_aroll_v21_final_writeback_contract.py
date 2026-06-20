@@ -6,7 +6,17 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from aroll_v21.ir.models import (
+    BlockerReport,
+    CanonicalSourceGraph,
+    CanonicalWord,
+    CaptionRenderUnit,
+    FinalTimelineSegment,
+    RunReport,
+    SourceGraphInvariantReport,
+)
 from aroll_v21.operator import ArollV21OperatorConfig, run_operator
+from aroll_v21.writeback.real_draft_writeback import RealDraftWriteback
 from tests.test_aroll_v21_final_backend_integration_contract import add_selected_track_callout, read_json
 from tests.test_aroll_v21_full_chain_internal_self_check import ExternalWordTimelineAdapter
 from tests.test_aroll_v21_real_writeback_backend import run_report_from_result
@@ -34,6 +44,139 @@ def _run_write_operator(root: Path, result, *, writeback_factory=None):
 
 
 class ArollV21FinalWritebackContractTests(unittest.TestCase):
+    def test_gapless_projection_keeps_video_unit_for_cross_segment_caption(self) -> None:
+        words = [
+            CanonicalWord(
+                word_id=f"w{index}",
+                text=text,
+                normalized_text=text,
+                source_start_us=start,
+                source_end_us=end,
+                source_material_id="mat",
+                source_segment_id=f"src{index}",
+                subtitle_uid=None,
+                subtitle_index=None,
+                char_start=None,
+                char_end=None,
+                confidence=None,
+                is_cuttable_left=True,
+                is_cuttable_right=True,
+            )
+            for index, (text, start, end) in enumerate(
+                [
+                    ("你嘲笑嘉豪是对自己人", 0, 1_000_000),
+                    ("的规训", 1_000_000, 1_600_000),
+                    ("你其实是在嘲笑自己", 2_000_000, 2_600_000),
+                ],
+                start=1,
+            )
+        ]
+        report = RunReport(
+            status="ok",
+            source_graph=CanonicalSourceGraph(
+                words=words,
+                edit_units=[],
+                subtitle_rows=[],
+                source_materials=[],
+                source_segments=[],
+                text_materials=[],
+                text_segments=[],
+                invariant_report=SourceGraphInvariantReport(
+                    single_source_graph_ok=True,
+                    all_words_have_source_time=True,
+                    all_edit_units_have_word_ids=True,
+                    unbound_word_count=0,
+                    unbound_subtitle_count=0,
+                    blocker_count=0,
+                ),
+            ),
+            repeat_clusters=[],
+            decision_plan=None,
+            final_timeline=[
+                FinalTimelineSegment(
+                    segment_id="seg1",
+                    source_material_id="mat",
+                    source_segment_id="src1",
+                    source_start_us=0,
+                    source_end_us=1_000_000,
+                    target_start_us=0,
+                    target_end_us=1_000_000,
+                    word_ids=["w1"],
+                    text="你嘲笑嘉豪是对自己人",
+                    decision_ids=[],
+                ),
+                FinalTimelineSegment(
+                    segment_id="seg2",
+                    source_material_id="mat",
+                    source_segment_id="src2",
+                    source_start_us=1_000_000,
+                    source_end_us=1_600_000,
+                    target_start_us=1_000_000,
+                    target_end_us=1_600_000,
+                    word_ids=["w2"],
+                    text="的规训",
+                    decision_ids=[],
+                ),
+                FinalTimelineSegment(
+                    segment_id="seg3",
+                    source_material_id="mat",
+                    source_segment_id="src3",
+                    source_start_us=2_000_000,
+                    source_end_us=2_600_000,
+                    target_start_us=1_600_000,
+                    target_end_us=2_200_000,
+                    word_ids=["w3"],
+                    text="你其实是在嘲笑自己",
+                    decision_ids=[],
+                ),
+            ],
+            captions=[
+                CaptionRenderUnit(
+                    caption_id="cap1",
+                    timeline_segment_ids=["seg1", "seg2"],
+                    word_ids=["w1", "w2"],
+                    text="你嘲笑嘉豪是对自己人的规训",
+                    target_start_us=0,
+                    target_end_us=1_600_000,
+                    source_subtitle_uids=[],
+                    style_template_id="caption_template",
+                    containing_video_segment_id=None,
+                ),
+                CaptionRenderUnit(
+                    caption_id="cap2",
+                    timeline_segment_ids=["seg3"],
+                    word_ids=["w3"],
+                    text="你其实是在嘲笑自己",
+                    target_start_us=1_600_000,
+                    target_end_us=2_200_000,
+                    source_subtitle_uids=[],
+                    style_template_id="caption_template",
+                    containing_video_segment_id="seg3",
+                ),
+            ],
+            material_write_plan={
+                "segments": [
+                    {"id": "caption_seg_1", "material_id": "caption_mat_1", "target_timerange": {"start": 0, "duration": 1_600_000}},
+                    {"id": "caption_seg_2", "material_id": "caption_mat_2", "target_timerange": {"start": 1_600_000, "duration": 600_000}},
+                ],
+            },
+            validator_report={},
+            postwrite_report={},
+            blocker_report=BlockerReport(blocked=False, blockers=[]),
+        )
+        writeback = RealDraftWriteback()
+
+        projection = writeback._gapless_caption_video_projection_plan(report)
+        segments = [dict(row) for row in report.material_write_plan["segments"]]
+        writeback._apply_gapless_caption_ranges(segments, report.captions, projection["caption_target_ranges"])
+
+        self.assertEqual([unit.segment_id for unit in projection["video_units"]], ["seg1", "seg2", "seg3"])
+        self.assertEqual(projection["caption_target_ranges"]["cap1"], {"target_start_us": 0, "target_end_us": 1_600_000})
+        self.assertEqual(projection["caption_target_ranges"]["cap2"], {"target_start_us": 1_600_000, "target_end_us": 2_200_000})
+        first_end = segments[0]["target_timerange"]["start"] + segments[0]["target_timerange"]["duration"]
+        second_start = segments[1]["target_timerange"]["start"]
+        self.assertEqual(first_end, second_start)
+
     def test_mixed_selected_text_track_cleans_old_subtitles_preserves_callout_and_writes_captions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

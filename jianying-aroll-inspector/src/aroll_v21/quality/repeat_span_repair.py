@@ -12,6 +12,7 @@ SELF_REPAIR_AMBIGUOUS_SIMILARITY = 0.52
 
 _SENTENCE_FINAL_PARTICLES = set("\u4e86\u5427\u5417\u5462\u554a\u5440\u54e6\u54c8\u5457\u5566\u561b")
 _FRAGMENT_TAIL_PARTICLES = set("\u7684\u5f97\u5730\u4e4b\u5728\u4ece\u5bf9\u628a\u88ab\u5c06\u8ba9\u4f7f\u8ddf\u548c\u4e0e\u6216\u53ca\u4ee5\u4e3a\u4e8e\u5230")
+_OPEN_FILLER_SUFFIXES = ("那个", "这个", "就是", "然后", "那么", "所以")
 
 
 def recommended_drop_indices(row: dict[str, Any], cluster: dict[str, Any] | None = None) -> list[int]:
@@ -70,6 +71,8 @@ def self_repair_aborted_phrase_candidate(left_text: str, right_text: str) -> dic
     shared_suffix_chars = set(left_suffix) & set(right_suffix)
     has_restart_tail_evidence = bool(shared_suffix_chars)
     if left[-1] in _FRAGMENT_TAIL_PARTICLES:
+        has_restart_tail_evidence = True
+    if left_suffix in _OPEN_FILLER_SUFFIXES:
         has_restart_tail_evidence = True
 
     deterministic = ratio >= SELF_REPAIR_MIN_SIMILARITY and has_restart_tail_evidence

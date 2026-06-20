@@ -41,6 +41,11 @@ class ArollV21CliSacrificialWriteFlagTests(unittest.TestCase):
         self.assertIn("AllowSacrificialWriteWithoutPostwriteDecrypt", script)
         self.assertIn("--allow-sacrificial-write-without-postwrite-decrypt", script)
 
+    def test_powershell_entry_forwards_ready_run_dir(self) -> None:
+        script = Path("run_aroll_v21_operator.ps1").read_text("utf-8")
+        self.assertIn("ReadyRunDir", script)
+        self.assertIn("--ready-run-dir", script)
+
     def test_uat_fresh_draft_exposes_semantic_mode_without_hardcoded_baseline(self) -> None:
         script = Path("scripts/uat_fresh_draft.ps1").read_text("utf-8")
         self.assertIn("SemanticMode", script)

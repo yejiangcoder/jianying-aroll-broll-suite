@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from aroll_v21.quality.tiny_caption_classification import build_tiny_caption_classification_report
+
 
 TARGET_MIN_CHARS = 10
 TARGET_MAX_CHARS = 18
@@ -108,6 +110,7 @@ def fit_groups_to_segment_duration(
 
 def subtitle_interval_report(captions: list[Any]) -> dict[str, Any]:
     rows = sorted(captions, key=lambda row: (int(getattr(row, "target_start_us", 0)), int(getattr(row, "target_end_us", 0))))
+    tiny_report = build_tiny_caption_classification_report(rows)
     overlap_count = 0
     gap_violation_count = 0
     too_short_count = 0
@@ -153,8 +156,10 @@ def subtitle_interval_report(captions: list[Any]) -> dict[str, Any]:
         blocker_codes.append("V21_SUBTITLE_TOO_LONG")
     if hard_max_char_count:
         blocker_codes.append("V21_SUBTITLE_HARD_MAX_CHARS")
-    if captions_le_3_chars > MAX_CAPTIONS_LE_3_CHARS:
-        blocker_codes.append("V21_SUBTITLE_TINY_CAPTION_DENSITY")
+    if int(tiny_report.get("tiny_caption_fatal_count") or 0):
+        blocker_codes.append("V21_SUBTITLE_TINY_CAPTION_RESIDUAL")
+    if int(tiny_report.get("tiny_caption_residual_density_window_count") or 0):
+        blocker_codes.append("V21_SUBTITLE_TINY_CAPTION_RESIDUAL_DENSITY")
     if burst_count:
         blocker_codes.append("V21_SUBTITLE_CAPTION_DENSITY_BURST")
     return {
@@ -179,6 +184,7 @@ def subtitle_interval_report(captions: list[Any]) -> dict[str, Any]:
         "max_captions_in_5s": max_captions_in_window,
         "caption_burst_density_count": burst_count,
         "tiny_caption_details": tiny_caption_details,
+        **tiny_report,
         "subtitle_hard_max_char_details": hard_max_char_details,
         "subtitle_too_short_details": too_short_details,
         "subtitle_too_long_details": too_long_details,

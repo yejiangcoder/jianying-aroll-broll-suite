@@ -221,7 +221,11 @@ class FinalVisibleGenericQcRegressionTests(unittest.TestCase):
         )
         decisions = [row["decision"] for row in result.report["final_visible_repair_actions"]]
         self.assertIn("drop_negative_predicate_restart_span", decisions)
-        self.assertIn("cleanup_short_repair_residual_segments", decisions)
+        self.assertIn("span_drop", decisions)
+        self.assertIn(
+            "tiny_caption_residual",
+            [row["issue_type"] for row in result.report["final_visible_repair_actions"]],
+        )
         self.assertTrue(result.report["final_visible_repair_success"], result.report)
 
     def test_partial_phrase_restart_across_caption_boundary_is_removed(self) -> None:

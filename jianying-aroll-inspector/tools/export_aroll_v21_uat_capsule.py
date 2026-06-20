@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from aroll_runtime_paths import get_aroll_test_outputs_dir
+
 
 FORBIDDEN_FILENAMES = {"draft_content.json", "template-2.tmp"}
 FORBIDDEN_SUFFIXES = {
@@ -108,7 +110,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export a sanitized V21 production-parity capsule from a V21 run dir.")
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--case-id", required=True)
-    parser.add_argument("--out-root", type=Path, default=Path("fixtures/uat_capsules"))
+    parser.add_argument("--out-root", type=Path, default=get_aroll_test_outputs_dir() / "uat_capsules")
     parser.add_argument("--description", default="")
     parser.add_argument("--max-json-bytes", type=int, default=DEFAULT_MAX_JSON_BYTES)
     return parser.parse_args()

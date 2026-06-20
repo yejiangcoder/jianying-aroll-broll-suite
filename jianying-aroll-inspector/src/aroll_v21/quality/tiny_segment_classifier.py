@@ -11,6 +11,9 @@ PREFERRED_MIN_VIDEO_SEGMENT_US = 700_000
 MIN_SEMANTIC_BRIDGE_US = 600_000
 VISUAL_MIN_SEGMENT_DURATION_US = 1_200_000
 WEAK_TINY_TEXT = {"啊", "呃", "嗯", "呐", "呢", "吧", "嘛", "就", "的", "是", "在", "这个", "那个", "然后"}
+EXPLICIT_SEMANTIC_BRIDGE_REPAIR_REASONS = {
+    "de_shi_duplicate_bridge_trim_current",
+}
 
 
 @dataclass(frozen=True)
@@ -29,7 +32,17 @@ def classify_tiny_segment(segment: FinalTimelineSegment) -> TinySegmentClassific
     text = normalize_text(segment.text)
     weak_filler = text in WEAK_TINY_TEXT or len(text) <= 1
     hard_tiny = duration < MIN_VIDEO_SEGMENT_US and weak_filler
-    semantic_bridge = MIN_SEMANTIC_BRIDGE_US <= duration < VISUAL_MIN_SEGMENT_DURATION_US and 2 <= len(text) <= 10 and not weak_filler
+    repair_reason = str((segment.debug_hints or {}).get("final_visible_repair") or "")
+    explicit_repair_bridge = (
+        repair_reason in EXPLICIT_SEMANTIC_BRIDGE_REPAIR_REASONS
+        and 0 < duration < VISUAL_MIN_SEGMENT_DURATION_US
+        and 2 <= len(text) <= 10
+        and not weak_filler
+    )
+    semantic_bridge = (
+        explicit_repair_bridge
+        or MIN_SEMANTIC_BRIDGE_US <= duration < VISUAL_MIN_SEGMENT_DURATION_US and 2 <= len(text) <= 10 and not weak_filler
+    )
     visual_short = 0 < duration < VISUAL_MIN_SEGMENT_DURATION_US
     reason = ""
     if hard_tiny:
