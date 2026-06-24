@@ -22,6 +22,26 @@ MAX_COMMAND_RESTART_SOURCE_GAP_US = 700_000
 MAX_WHOLE_ABANDONED_RESTART_WORDS = 6
 MAX_WHOLE_ABANDONED_RESTART_CJK_CHARS = 10
 MIN_WHOLE_ABANDONED_RESTART_SHARED_CJK_CHARS = 3
+OPEN_CLAUSE_TAILS_AFTER_TRIM = (
+    "是",
+    "为",
+    "把",
+    "被",
+    "给",
+    "让",
+    "使",
+    "在",
+    "从",
+    "向",
+    "对",
+    "和",
+    "与",
+    "及",
+    "或",
+    "但",
+    "而",
+    "并",
+)
 
 
 @dataclass(frozen=True)
@@ -371,6 +391,8 @@ def _partial_boundary_restart_candidate(
                 continue
             if not _leading_word_prefix_matches(drop_ids, shared, source_graph):
                 continue
+            if _suffix_trim_would_leave_open_clause(previous_text, suffix):
+                continue
             return BoundaryRestartCandidate(
                 prev_segment_id=previous.segment_id,
                 next_segment_id=next_segment.segment_id,
@@ -442,6 +464,8 @@ def _source_tail_restart_candidate(
                 continue
             if not _leading_word_prefix_matches(drop_ids, shared, source_graph):
                 continue
+            if _suffix_trim_would_leave_open_clause(segment_text, suffix):
+                continue
             return BoundaryRestartCandidate(
                 prev_segment_id=segment.segment_id,
                 next_segment_id="",
@@ -482,6 +506,17 @@ def _following_unselected_words(
         if len(result) >= MAX_SOURCE_TAIL_RESTART_LOOKAHEAD_WORDS:
             break
     return result
+
+
+def _suffix_trim_would_leave_open_clause(text: str, suffix: str) -> bool:
+    normalized = normalize_text(text)
+    trimmed_suffix = normalize_text(suffix)
+    if not normalized or not trimmed_suffix or not normalized.endswith(trimmed_suffix):
+        return False
+    kept = normalized[: -len(trimmed_suffix)].strip()
+    if not kept:
+        return False
+    return kept.endswith(OPEN_CLAUSE_TAILS_AFTER_TRIM)
 
 
 def _unselected_words_between(

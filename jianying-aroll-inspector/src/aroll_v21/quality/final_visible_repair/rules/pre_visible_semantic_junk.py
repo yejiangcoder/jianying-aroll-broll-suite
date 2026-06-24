@@ -13,12 +13,26 @@ MAX_ISOLATED_SHORT_FRAGMENT_DURATION_US = 1_200_000
 
 
 MIN_ISOLATED_SHORT_FRAGMENT_SOURCE_GAP_US = 300_000
+MAX_COMMAND_TAIL_SOURCE_GAP_US = 700_000
 
 
 MIN_ISOLATED_SHORT_FRAGMENT_NEIGHBOR_CHARS = 5
 ACTION_ASPECT_TAILS = ("着", "了", "过")
 DEPENDENT_OBJECT_HEAD_PREFIXES = tuple("个件条张节款台辆本套部名位份颗枚只")
 LOW_INFORMATION_FRAGMENT_TAILS = ("的", "就", "是", "在", "把", "给", "去", "来", "这个", "那个")
+COMMAND_OR_DIRECTIVE_MARKERS = (
+    "立刻",
+    "马上",
+    "赶紧",
+    "赶快",
+    "别",
+    "不要",
+    "给我",
+    "给",
+    "把",
+    "滚",
+)
+COMMAND_COMPLETION_TAILS = ("了", "掉", "完", "走", "开", "下去", "起来")
 
 
 def _repair_pre_visible_semantic_junk_candidate(
@@ -189,6 +203,8 @@ def _is_isolated_short_source_gap_fragment(
         return False
     previous_gap_us = current_range[0] - previous_range[1]
     next_gap_us = next_range[0] - current_range[1]
+    if _looks_like_dependent_tail_after_command(previous_text, text, previous_gap_us):
+        return False
     return (
         previous_gap_us >= MIN_ISOLATED_SHORT_FRAGMENT_SOURCE_GAP_US
         and next_gap_us >= MIN_ISOLATED_SHORT_FRAGMENT_SOURCE_GAP_US
@@ -205,3 +221,19 @@ def _looks_like_action_fragment_before_dependent_object(text: str, next_text: st
 
 def _looks_like_low_information_isolated_fragment(text: str) -> bool:
     return any(text.endswith(tail) for tail in LOW_INFORMATION_FRAGMENT_TAILS)
+
+
+def _looks_like_dependent_tail_after_command(previous_text: str, text: str, previous_gap_us: int) -> bool:
+    if previous_gap_us < 0 or previous_gap_us > MAX_COMMAND_TAIL_SOURCE_GAP_US:
+        return False
+    if not (2 <= len(text) <= MAX_ISOLATED_SHORT_FRAGMENT_CHARS):
+        return False
+    if _looks_like_low_information_isolated_fragment(text):
+        return False
+    if any(text.endswith(tail) for tail in LOW_INFORMATION_FRAGMENT_TAILS):
+        return False
+    if not previous_text:
+        return False
+    if not any(marker in previous_text for marker in COMMAND_OR_DIRECTIVE_MARKERS):
+        return False
+    return previous_text.endswith(COMMAND_COMPLETION_TAILS)

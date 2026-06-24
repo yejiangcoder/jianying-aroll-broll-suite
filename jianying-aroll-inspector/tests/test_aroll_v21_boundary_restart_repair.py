@@ -157,6 +157,16 @@ def test_boundary_restart_does_not_repair_far_topic_reuse() -> None:
     assert proposals == []
 
 
+def test_boundary_restart_does_not_trim_command_tail_when_it_leaves_open_clause() -> None:
+    graph = _graph_for_words(["立刻", "给", "老子", "关", "了", "老子", "最烦", "这种"])
+    first = _segment("v21_seg_000001", ["w001", "w002", "w003", "w004", "w005"], 0, 1_000_000, "立刻给老子关了")
+    second = _segment("v21_seg_000002", ["w006", "w007", "w008"], 1_000_000, 1_600_000, "老子最烦这种")
+
+    proposals = build_boundary_restart_proposals([first, second], graph)
+
+    assert proposals == []
+
+
 def test_boundary_restart_without_clear_word_ids_does_not_apply() -> None:
     graph, timeline = _boundary_restart_fixture()
     without_words = replace(timeline[0], word_ids=[])

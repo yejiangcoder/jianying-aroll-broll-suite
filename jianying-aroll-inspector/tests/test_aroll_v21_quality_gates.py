@@ -5450,6 +5450,83 @@ class ArollV21QualityGateTests(unittest.TestCase):
         self.assertEqual(alignment["one_char_caption_count"], 0)
         self.assertTrue(alignment["gate_passed"], alignment)
 
+    def test_final_visible_keeps_opening_command_and_following_expressive_tail(self) -> None:
+        rows = [
+            ("w001", "咳", 1_500_000, 2_300_000),
+            ("w002", "立刻", 3_566_666, 3_926_666),
+            ("w003", "给", 3_926_666, 4_166_666),
+            ("w004", "老子", 4_166_666, 4_366_666),
+            ("w005", "关", 4_366_666, 4_566_666),
+            ("w006", "了", 4_566_666, 4_726_666),
+            ("w007", "弱智", 5_206_666, 5_766_666),
+            ("w008", "老子", 6_066_666, 6_346_666),
+            ("w009", "最烦", 6_346_666, 6_746_666),
+            ("w010", "这种", 6_746_666, 6_946_666),
+            ("w011", "深夜", 6_946_666, 7_226_666),
+        ]
+        source_graph = _graph_for_single_subtitle_words(rows)
+        renderer = SubtitleRenderer()
+        timeline = [
+            replace(
+                _segment(1, 0, 3_226_666),
+                source_material_id="main",
+                source_segment_id="primary_window",
+                source_start_us=1_500_000,
+                source_end_us=4_726_666,
+                target_start_us=0,
+                target_end_us=3_226_666,
+                word_ids=[f"w{index:03d}" for index in range(1, 7)],
+                text="咳立刻给老子关了",
+            ),
+            replace(
+                _segment(2, 3_226_666, 3_786_666),
+                source_material_id="main",
+                source_segment_id="primary_window",
+                source_start_us=5_206_666,
+                source_end_us=5_766_666,
+                target_start_us=3_226_666,
+                target_end_us=3_786_666,
+                word_ids=["w007"],
+                text="弱智",
+            ),
+            replace(
+                _segment(3, 3_786_666, 4_946_666),
+                source_material_id="main",
+                source_segment_id="primary_window",
+                source_start_us=6_066_666,
+                source_end_us=7_226_666,
+                target_start_us=3_786_666,
+                target_end_us=4_946_666,
+                word_ids=[f"w{index:03d}" for index in range(8, 12)],
+                text="老子最烦这种深夜",
+            ),
+        ]
+        captions = renderer.render(timeline, source_graph)
+
+        result = repair_final_visible_caption_issues(
+            final_timeline=timeline,
+            captions=captions,
+            source_graph=source_graph,
+            render_captions=lambda repaired: renderer.render(repaired, source_graph),
+        )
+
+        visible = "".join(caption.text for caption in result.captions)
+        self.assertNotIn("咳", visible)
+        self.assertIn("立刻给老子关了弱智老子最烦这种深夜", visible)
+        actions = result.report["final_visible_repair_actions"]
+        self.assertNotIn(
+            "弱智",
+            [action.get("junk_text") for action in actions if action.get("decision") == "drop_isolated_junk_segment"],
+        )
+        self.assertNotIn(
+            "老子关了",
+            [action.get("target_text") for action in actions if action.get("issue_type") == "boundary_restart"],
+        )
+        self.assertNotIn(
+            "立刻给",
+            [action.get("dropped_text") for action in actions if action.get("reason") == "short_abandoned_open_clause"],
+        )
+
     def test_visual_pacing_gate_allows_only_explicit_semantic_bridge_exceptions(self) -> None:
         allowed = build_visual_pacing_report(
             final_timeline=[replace(_segment(1, 0, 700_000), text="语义桥")],
