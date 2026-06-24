@@ -13,6 +13,10 @@ from aroll_v21.quality.final_visible_repeat_classification import (
     classify_final_visible_repeat_candidates,
     warning_repeat_candidates as _warning_repeat_candidates,
 )
+from aroll_v21.quality.final_semantic_integrity import (
+    build_final_semantic_integrity_candidates,
+    semantic_integrity_reason_counts,
+)
 from aroll_v21.quality.boundary_overlap import (
     is_explanatory_term_reuse,
     is_semantic_label_reuse_boundary,
@@ -67,6 +71,7 @@ def build_final_caption_visible_repeat_gate(captions: list[CaptionRenderUnit]) -
     self_repair_candidates = _self_repair_aborted_phrase_candidates(ordered)
     dangling_candidates = _dangling_prefix_suffix_candidates(ordered)
     semantic_suspect_candidates = _semantic_garbage_or_asr_suspect_candidates(ordered)
+    semantic_integrity_candidates = build_final_semantic_integrity_candidates(ordered)
     raw_cross_caption_containment_candidates = _cross_caption_semantic_containment_candidates(ordered)
     raw_restart_repeat_candidates = [
         *_restart_repeat_visible_candidates(ordered),
@@ -107,6 +112,7 @@ def build_final_caption_visible_repeat_gate(captions: list[CaptionRenderUnit]) -
         *visible_repeat_candidates,
         *dangling_candidates,
         *semantic_suspect_candidates,
+        *semantic_integrity_candidates,
     ]
     blocker_codes: list[str] = []
     if final_visible_quality_candidates:
@@ -115,6 +121,8 @@ def build_final_caption_visible_repeat_gate(captions: list[CaptionRenderUnit]) -
         blocker_codes.append("V21_FINAL_VISIBLE_DANGLING_PREFIX_SUFFIX")
     if semantic_suspect_candidates:
         blocker_codes.append("V21_FINAL_VISIBLE_SEMANTIC_GARBAGE_OR_ASR_SUSPECT")
+    if semantic_integrity_candidates:
+        blocker_codes.append("V21_FINAL_SEMANTIC_INTEGRITY_GATE_FAILED")
     if cross_caption_containment_candidates:
         blocker_codes.append("V21_FINAL_VISIBLE_CROSS_CAPTION_SEMANTIC_CONTAINMENT")
     if restart_repeat_candidates:
@@ -144,6 +152,8 @@ def build_final_caption_visible_repeat_gate(captions: list[CaptionRenderUnit]) -
         "self_repair_aborted_phrase_count": len(self_repair_candidates),
         "dangling_prefix_suffix_count": len(dangling_candidates),
         "semantic_garbage_or_asr_suspect_count": len(semantic_suspect_candidates),
+        "semantic_integrity_count": len(semantic_integrity_candidates),
+        "semantic_integrity_reason_counts": semantic_integrity_reason_counts(semantic_integrity_candidates),
         "cross_caption_semantic_containment_count": len(cross_caption_containment_candidates),
         "cross_caption_semantic_containment_raw_count": len(raw_cross_caption_containment_candidates),
         "restart_repeat_visible_count": len(restart_repeat_candidates),
@@ -156,6 +166,7 @@ def build_final_caption_visible_repeat_gate(captions: list[CaptionRenderUnit]) -
         "self_repair_aborted_phrase_candidates": self_repair_candidates,
         "dangling_prefix_suffix_candidates": dangling_candidates,
         "semantic_garbage_or_asr_suspect_candidates": semantic_suspect_candidates,
+        "semantic_integrity_candidates": semantic_integrity_candidates,
         "cross_caption_semantic_containment_candidates": cross_caption_containment_candidates,
         "restart_repeat_visible_candidates": restart_repeat_candidates,
         "final_caption_visible_repeat_gate_enabled": True,

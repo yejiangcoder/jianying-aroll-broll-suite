@@ -6,6 +6,7 @@ from typing import Any
 FINAL_VISIBLE_REPAIR_COUNT_KEYS = (
     "dangling_prefix_suffix_count",
     "semantic_garbage_or_asr_suspect_count",
+    "semantic_integrity_count",
     "cross_caption_semantic_containment_count",
     "restart_repeat_visible_count",
 )

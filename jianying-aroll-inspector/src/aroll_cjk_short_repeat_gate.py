@@ -15,6 +15,8 @@ _PRONOUNS = set("\u6211\u4f60\u4ed6\u5979\u5b83\u8fd9\u90a3")
 _CONNECTORS = set("\u5c31\u4f1a\u53c8\u4e5f\u8fd8\u518d\u90fd\u624d\u8981\u60f3\u80fd\u8be5")
 _SINGLE_CHAR_REPEATABLE = _PRONOUNS | _CONNECTORS
 _CJK_NUMERAL_CHARS = set("\u96f6\u3007\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341\u767e\u5343\u4e07\u4e24\u51e0\u534a0123456789")
+_REDUPLICATION_MODIFIER_SUFFIXES = ("的", "地", "得")
+_MAX_PROTECTED_MODIFIER_REDUPLICATION_CHARS = 4
 
 
 def _row_text(row: dict[str, Any]) -> str:
@@ -86,11 +88,26 @@ def _adjacent_phrase_repeat_classification(normalized: str, start: int, size: in
         return "warning", "A-not-A CJK question structure; not treated as stutter"
     if _is_numeral_headed_short_phrase(phrase):
         return "warning", "numeral-headed short phrase reduplication; not treated as high-confidence stutter"
+    if _is_modifier_reduplication(normalized, start, size, phrase):
+        return "warning", "modifier reduplication before 的/地/得; not treated as high-confidence stutter"
     return "fatal", "adjacent identical CJK ngram in final subtitle text"
 
 
 def classify_adjacent_cjk_ngram_repeat(normalized: str, start: int, size: int, phrase: str) -> tuple[str, str]:
     return _adjacent_phrase_repeat_classification(normalized, start, size, phrase)
+
+
+def _is_modifier_reduplication(normalized: str, start: int, size: int, phrase: str) -> bool:
+    if not phrase or size <= 0 or size > _MAX_PROTECTED_MODIFIER_REDUPLICATION_CHARS:
+        return False
+    if not all(_CJK_RE.match(char) for char in phrase):
+        return False
+    end = start + (size * 2)
+    if start < 0 or end > len(normalized):
+        return False
+    if normalized[start:end] != phrase + phrase:
+        return False
+    return end < len(normalized) and normalized[end] in _REDUPLICATION_MODIFIER_SUFFIXES
 
 
 def _candidate(

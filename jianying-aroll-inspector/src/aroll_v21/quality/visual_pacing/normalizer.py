@@ -142,7 +142,11 @@ class VisualPacingNormalizer:
             unsafe_merge_attempt_count=unsafe_attempts,
         )
         after_short = _short_count(current)
-        semantic_bridge_count = sum(1 for segment in current if _is_allowed_semantic_bridge_exception(segment))
+        semantic_bridge_count = sum(
+            1
+            for segment in current
+            if _is_allowed_semantic_bridge_exception(segment) and not _is_visual_gap_split_bridge(segment)
+        )
         semantic_bridge_safe_merge_candidates = _semantic_bridge_safe_merge_candidates(current, source_graph)
         cut_density_report = _cut_density_report(current)
         blocking_short_count = _blocking_short_count(current)
@@ -242,8 +246,6 @@ class VisualPacingNormalizer:
             for merge_index in sorted(candidates, key=lambda value: _duration(segments[value]) + _duration(segments[value + 1])):
                 left_candidate = segments[merge_index]
                 right_candidate = segments[merge_index + 1]
-                if len(segments) < 10 and not _can_merge_across_subtitle_boundary(left_candidate, right_candidate, word_lookup):
-                    continue
                 group = _build_merge_group(
                     left_candidate,
                     right_candidate,
@@ -252,6 +254,12 @@ class VisualPacingNormalizer:
                     word_lookup,
                     video_segment_id=segments[merge_index].segment_id,
                 )
+                if (
+                    len(segments) < 10
+                    and not _can_merge_across_subtitle_boundary(left_candidate, right_candidate, word_lookup)
+                    and not _merge_group_has_redundant_restart_gap(group)
+                ):
+                    continue
                 if group.merge_safe:
                     return merge_index, unsafe_count
                 unsafe_reasons = set(group.unsafe_reasons)
@@ -354,7 +362,7 @@ class VisualPacingNormalizer:
     def _merge_at(self, segments: list[FinalTimelineSegment], index: int) -> list[FinalTimelineSegment]:
         left = segments[index]
         right = segments[index + 1]
-        child_segments = [*_child_segment_records(left), *_child_segment_records(right)]
+        child_segments = _dedupe_child_segment_records([*_child_segment_records(left), *_child_segment_records(right)])
         merged = replace(
             left,
             source_start_us=min(left.source_start_us, right.source_start_us),
@@ -382,6 +390,87 @@ class VisualPacingNormalizer:
         return [*segments[:index], merged, *segments[index + 2 :]]
 
 
+def _dedupe_child_segment_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for row in records:
+        if not isinstance(row, dict):
+            continue
+        word_ids = tuple(str(word_id) for word_id in list(row.get("word_ids") or []))
+        key = (
+            str(row.get("segment_id") or ""),
+            word_ids,
+            int(row.get("source_start_us") or 0),
+            int(row.get("source_end_us") or 0),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(dict(row))
+    return deduped
+
+
+def _gap_is_redundant_restart_fragment(
+    gap_words: list[Any],
+    left_record: dict[str, Any],
+    right_record: dict[str, Any],
+    word_lookup: dict[str, Any],
+) -> bool:
+    if not gap_words:
+        return False
+    gap_text = normalize_text("".join(str(getattr(word, "text", "") or "") for word in gap_words))
+    if len(gap_text) < 2:
+        return False
+    left_text = normalize_text(_record_text(left_record, word_lookup))
+    right_text = normalize_text(_record_text(right_record, word_lookup))
+    if not left_text or not right_text:
+        return False
+    remaining = gap_text
+    consumed_right_prefix = False
+    consumed_left_suffix = False
+    while remaining:
+        prefix_len = _common_prefix_len(remaining, right_text)
+        if prefix_len >= 2:
+            remaining = remaining[prefix_len:]
+            consumed_right_prefix = True
+            continue
+        suffix_len = _common_suffix_len(remaining, left_text)
+        if suffix_len >= 2:
+            remaining = remaining[: len(remaining) - suffix_len]
+            consumed_left_suffix = True
+            continue
+        return False
+    return consumed_right_prefix and consumed_left_suffix
+
+
+def _record_text(record: dict[str, Any], word_lookup: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for word_id in list(record.get("word_ids") or []):
+        word = word_lookup.get(str(word_id))
+        if word is None:
+            continue
+        parts.append(str(getattr(word, "text", "") or ""))
+    return "".join(parts)
+
+
+def _common_prefix_len(left: str, right: str) -> int:
+    count = 0
+    for left_char, right_char in zip(left, right):
+        if left_char != right_char:
+            break
+        count += 1
+    return count
+
+
+def _common_suffix_len(left: str, right: str) -> int:
+    count = 0
+    for left_char, right_char in zip(reversed(left), reversed(right)):
+        if left_char != right_char:
+            break
+        count += 1
+    return count
+
+
 def _build_merge_group(
     left: FinalTimelineSegment,
     right: FinalTimelineSegment,
@@ -391,7 +480,7 @@ def _build_merge_group(
     *,
     video_segment_id: str,
 ) -> VisualMergeGroup:
-    merged_records = [*_child_segment_records(left, word_lookup), *_child_segment_records(right, word_lookup)]
+    merged_records = _dedupe_child_segment_records([*_child_segment_records(left, word_lookup), *_child_segment_records(right, word_lookup)])
     return _build_group_from_records(
         video_segment_id=video_segment_id,
         records=merged_records,
@@ -427,6 +516,7 @@ def _build_group_from_records(
     windows: list[tuple[str, int, int]],
     word_lookup: dict[str, Any],
 ) -> VisualMergeGroup:
+    records = _dedupe_child_segment_records(records)
     records = sorted(records, key=lambda row: (int(row.get("source_start_us") or 0), int(row.get("source_end_us") or 0), str(row.get("segment_id") or "")))
     child_ids = [str(row.get("segment_id") or "") for row in records if str(row.get("segment_id") or "")]
     source_start = min([int(row.get("source_start_us") or base_segment.source_start_us) for row in records] or [int(base_segment.source_start_us)])
@@ -447,11 +537,12 @@ def _build_group_from_records(
         gap_us = gap_end - gap_start
         gap_words = _words_overlapping_range(source_graph, gap_start, gap_end, child_word_ids)
         gap_word_ids = [word.word_id for word in gap_words]
+        redundant_restart_gap = _gap_is_redundant_restart_fragment(gap_words, left, right, word_lookup)
         if gap_us < 0:
             unsafe_reasons.add("source_ranges_overlap")
-        if gap_us > MAX_SAFE_BRIDGE_GAP_US:
+        if gap_us > MAX_SAFE_BRIDGE_GAP_US and not redundant_restart_gap:
             unsafe_reasons.add("bridge_gap_exceeds_threshold")
-        if gap_word_ids:
+        if gap_word_ids and not redundant_restart_gap:
             unsafe_reasons.add("dropped_words_crossed")
             dropped_word_ids.update(gap_word_ids)
             dropped_segment_ids.update(_dropped_segment_ids_for_words(gap_words))
@@ -471,10 +562,13 @@ def _build_group_from_records(
                 "source_end_us": gap_end,
                 "duration_us": max(0, gap_us),
                 "dropped_word_ids": gap_word_ids,
+                "redundant_restart_gap": bool(redundant_restart_gap),
+                "counts_for_unspoken_bridge": not bool(redundant_restart_gap),
             }
         )
-    max_gap = max([int(row.get("duration_us") or 0) for row in bridged_gaps] or [0])
-    total_gap = sum(int(row.get("duration_us") or 0) for row in bridged_gaps)
+    counted_gaps = [row for row in bridged_gaps if bool(row.get("counts_for_unspoken_bridge", True))]
+    max_gap = max([int(row.get("duration_us") or 0) for row in counted_gaps] or [0])
+    total_gap = sum(int(row.get("duration_us") or 0) for row in counted_gaps)
     source_duration = max(1, source_end - source_start)
     ratio = total_gap / source_duration
     if ratio > MAX_UNSPOKEN_BRIDGE_RATIO:
@@ -626,17 +720,34 @@ def _is_semantic_bridge(segment: FinalTimelineSegment) -> bool:
 
 def _is_allowed_semantic_bridge_exception(segment: FinalTimelineSegment) -> bool:
     classification = classify_tiny_segment(segment)
-    return (
-        classification.semantic_bridge
+    visual_gap_split_bridge = (
+        _is_visual_gap_split_bridge(segment)
         and not classification.weak_filler
-        and len(normalize_text(segment.text)) > 1
-        and _duration(segment) >= MIN_SEMANTIC_BRIDGE_EXCEPTION_US
+        and 2 <= len(normalize_text(segment.text)) <= 10
+        and _duration(segment) >= MIN_HARD_SEGMENT_DURATION_US
     )
+    return (
+        visual_gap_split_bridge
+        or (
+            classification.semantic_bridge
+            and not classification.weak_filler
+            and len(normalize_text(segment.text)) > 1
+            and _duration(segment) >= MIN_SEMANTIC_BRIDGE_EXCEPTION_US
+        )
+    )
+
+
+def _is_visual_gap_split_bridge(segment: FinalTimelineSegment) -> bool:
+    return bool((segment.debug_hints or {}).get("visual_pacing_large_intra_segment_gap_split"))
 
 
 def _boundary_cleanup_pair(left: FinalTimelineSegment, right: FinalTimelineSegment) -> bool:
     decision_ids = {str(decision_id) for decision_id in [*left.decision_ids, *right.decision_ids]}
     return any("boundary_suffix_prefix_overlap_cleanup" in decision_id for decision_id in decision_ids)
+
+
+def _merge_group_has_redundant_restart_gap(group: VisualMergeGroup) -> bool:
+    return any(bool(row.get("redundant_restart_gap")) for row in list(group.bridged_gaps or []))
 
 
 def _can_merge_across_subtitle_boundary(
@@ -755,6 +866,7 @@ def _residual_visual_short_segments(
         group = groups_by_id.get(segment.segment_id) or {}
         allowed_bridge = _is_allowed_semantic_bridge_exception(segment)
         safe_merge_candidate = safe_merge_by_id.get(segment.segment_id)
+        semantic_bridge_reason = "large_gap_split_bridge" if _is_visual_gap_split_bridge(segment) else "semantic_bridge_exception"
         rows.append(
             {
                 "index": index,
@@ -769,8 +881,8 @@ def _residual_visual_short_segments(
                 "text": segment.text,
                 "previous_segment_id": segments[index - 1].segment_id if index > 0 else "",
                 "next_segment_id": segments[index + 1].segment_id if index + 1 < len(segments) else "",
-                "short_segment_status": "semantic_bridge_exception" if allowed_bridge else "blocking",
-                "semantic_bridge_reason": "semantic_bridge_exception" if allowed_bridge else "",
+                "short_segment_status": semantic_bridge_reason if allowed_bridge else "blocking",
+                "semantic_bridge_reason": semantic_bridge_reason if allowed_bridge else "",
                 "why_not_merge": _semantic_bridge_why_not_merge(
                     allowed_bridge=allowed_bridge,
                     group=group,
@@ -823,6 +935,8 @@ def _semantic_bridge_safe_merge_candidates(
         for merge_index in candidates:
             left = segments[merge_index]
             right = segments[merge_index + 1]
+            if _is_visual_gap_split_bridge(left) or _is_visual_gap_split_bridge(right):
+                continue
             if len(segments) < 10 and not _can_merge_across_subtitle_boundary(left, right, word_lookup):
                 continue
             group = _build_merge_group(

@@ -1488,6 +1488,7 @@ class ArollV21QualityGateTests(unittest.TestCase):
             {
                 "dangling_prefix_suffix_count": 0,
                 "semantic_garbage_or_asr_suspect_count": 0,
+                "semantic_integrity_count": 0,
                 "cross_caption_semantic_containment_count": 0,
                 "restart_repeat_visible_count": 0,
             },
@@ -2333,6 +2334,7 @@ class ArollV21QualityGateTests(unittest.TestCase):
             {
                 "dangling_prefix_suffix_count": 0,
                 "semantic_garbage_or_asr_suspect_count": 0,
+                "semantic_integrity_count": 0,
                 "cross_caption_semantic_containment_count": 0,
                 "restart_repeat_visible_count": 0,
             },
@@ -5017,7 +5019,22 @@ class ArollV21QualityGateTests(unittest.TestCase):
 
     def test_engine_quality_gate_report_uses_final_timeline_after_repair(self) -> None:
         class StaleVisualPacing:
+            def __init__(self) -> None:
+                self.calls = 0
+
             def normalize(self, _final_timeline, _source_graph):
+                self.calls += 1
+                if self.calls > 1:
+                    return list(_final_timeline), build_visual_pacing_report(
+                        final_timeline=list(_final_timeline),
+                        captions=[],
+                        executed=True,
+                        source_graph=_source_graph,
+                        merge_report={
+                            "visual_pacing_executed": True,
+                            "visual_pacing_rerun_after_final_visible_repair": True,
+                        },
+                    )
                 timeline = [
                     replace(
                         _segment(1, 0, 800_000),
@@ -5057,7 +5074,8 @@ class ArollV21QualityGateTests(unittest.TestCase):
                 }
 
         materials, text_segments = _template_rows()
-        report = ArollEngine(visual_pacing=StaleVisualPacing()).run(
+        visual_pacing = StaleVisualPacing()
+        report = ArollEngine(visual_pacing=visual_pacing).run(
             ArollRunInput(
                 mode="write",
                 word_timeline=[
@@ -5083,7 +5101,12 @@ class ArollV21QualityGateTests(unittest.TestCase):
 
         self.assertEqual(report.status, "ok")
         self.assertEqual([segment.text for segment in report.final_timeline], ["我们反对的是公共问题"])
+        self.assertEqual(visual_pacing.calls, 2)
         self.assertGreater(report.validator_report["final_visible_caption_repair_report"]["final_visible_repair_action_count"], 0)
+        self.assertEqual(
+            report.validator_report["final_visible_caption_repair_report"]["final_visible_repair_visual_pacing_rerun_count"],
+            1,
+        )
         self.assertTrue(visual["gate_passed"])
         self.assertEqual(visual["final_video_segment_count"], 1)
         self.assertEqual(visual["caption_count"], 1)

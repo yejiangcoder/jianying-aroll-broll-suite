@@ -10,7 +10,8 @@ from aroll_v21.quality.repeat_span_repair import self_repair_aborted_phrase_cand
 
 
 CJK_NUMERAL_PREFIXES = tuple("一二两三四五六七八九十百千万半几多")
-REDUPLICATION_MODIFIER_SUFFIXES = ("的", "地")
+REDUPLICATION_MODIFIER_SUFFIXES = ("的", "地", "得")
+MAX_PROTECTED_MODIFIER_REDUPLICATION_CHARS = 4
 
 
 def _unit_display_rows(units: list[EditUnit]) -> list[dict[str, Any]]:
@@ -179,7 +180,12 @@ class CandidateEvidenceBuilder:
 
     def _cjk_short_repeats(self, units: list[EditUnit], words_by_id: dict[str, Any]) -> list[RepeatCluster]:
         rows = _unit_display_rows(units)
-        candidates = [row for row in detect_cjk_short_repeats(rows) if str(row.get("severity") or "fatal") == "fatal"]
+        candidates = [
+            row
+            for row in detect_cjk_short_repeats(rows)
+            if str(row.get("severity") or "fatal") == "fatal"
+            and not self._is_protected_cjk_short_modifier_reduplication(row)
+        ]
         clusters: list[RepeatCluster] = []
         for seq, candidate in enumerate(candidates, start=1000):
             row_index = int(candidate.get("row_index") or 0)
@@ -225,6 +231,22 @@ class CandidateEvidenceBuilder:
         if len(overlap) < 2 or not left or not right:
             return False
         return left.endswith(overlap) and right.startswith(overlap) and overlap != left
+
+    def _is_protected_cjk_short_modifier_reduplication(self, candidate: dict[str, Any]) -> bool:
+        phrase = normalize_text(str(candidate.get("phrase") or candidate.get("overlap") or ""))
+        text = normalize_text(str(candidate.get("text") or ""))
+        span = candidate.get("span") if isinstance(candidate.get("span"), dict) else {}
+        if not phrase or not text or not self._looks_like_reduplicated_modifier_phrase(phrase):
+            return False
+        start = int(span.get("start_char") or 0)
+        end = int(span.get("end_char") or 0)
+        if start < 0 or end <= start or end > len(text):
+            repeated = phrase + phrase
+            start = text.find(repeated)
+            end = start + len(repeated) if start >= 0 else -1
+        if start < 0 or end <= start or text[start:end] != phrase + phrase:
+            return False
+        return end < len(text) and text[end] in REDUPLICATION_MODIFIER_SUFFIXES
 
     def _split_metadata_for_candidate(
         self,
@@ -430,7 +452,7 @@ class CandidateEvidenceBuilder:
                 span
                 for span in repeated_phrase_spans(unit.text)
                 if not self._is_a_not_a_false_positive(unit.text, span)
-                and not self._is_protected_quantity_reduplication(unit.text, span)
+                and not self._is_protected_modifier_reduplication(unit.text, span)
             ]
             word_audio_spans = self._word_audio_repeat_spans(unit, words_by_id)
             high_confidence = [span for span in spans if int(span.get("phrase_len") or 0) >= 2] + word_audio_spans
@@ -469,7 +491,7 @@ class CandidateEvidenceBuilder:
                 left = tokens[start : start + size]
                 right = tokens[start + size : start + (size * 2)]
                 if left == right:
-                    if self._is_protected_word_audio_quantity_reduplication(tokens, start, size):
+                    if self._is_protected_word_audio_modifier_reduplication(tokens, start, size):
                         continue
                     spans.append(
                         {
@@ -558,9 +580,9 @@ class CandidateEvidenceBuilder:
             tokens.append({"word_id": word_id, "text": text})
         return tokens
 
-    def _is_protected_quantity_reduplication(self, text: str, span: dict[str, Any]) -> bool:
+    def _is_protected_modifier_reduplication(self, text: str, span: dict[str, Any]) -> bool:
         phrase = normalize_text(str(span.get("phrase") or ""))
-        if not self._looks_like_quantity_phrase(phrase):
+        if not self._looks_like_reduplicated_modifier_phrase(phrase):
             return False
         start = int(span.get("start_char") or 0)
         phrase_len = int(span.get("phrase_len") or len(phrase))
@@ -570,15 +592,22 @@ class CandidateEvidenceBuilder:
             return False
         return norm[suffix_index] in REDUPLICATION_MODIFIER_SUFFIXES
 
-    def _is_protected_word_audio_quantity_reduplication(self, tokens: list[str], start: int, size: int) -> bool:
+    def _is_protected_word_audio_modifier_reduplication(self, tokens: list[str], start: int, size: int) -> bool:
         phrase = "".join(tokens[start : start + size])
-        if not self._looks_like_quantity_phrase(phrase):
+        if not self._looks_like_reduplicated_modifier_phrase(phrase):
             return False
         suffix_index = start + (size * 2)
         if suffix_index >= len(tokens):
             return False
         suffix = normalize_text(tokens[suffix_index])
         return suffix.startswith(REDUPLICATION_MODIFIER_SUFFIXES)
+
+    def _looks_like_reduplicated_modifier_phrase(self, phrase: str) -> bool:
+        if not phrase or len(phrase) > MAX_PROTECTED_MODIFIER_REDUPLICATION_CHARS:
+            return False
+        if not all("\u3400" <= char <= "\u9fff" for char in phrase):
+            return False
+        return self._looks_like_quantity_phrase(phrase) or len(phrase) >= 1
 
     def _looks_like_quantity_phrase(self, phrase: str) -> bool:
         if len(phrase) < 2 or len(phrase) > 4:

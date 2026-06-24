@@ -83,6 +83,7 @@ class ArollV21StaticHiddenBugScanTests(unittest.TestCase):
             "src/aroll_v21/quality/final_visible_repair/rules/short_residual.py",
             "src/aroll_v21/quality/final_visible_repair/rules/source_boundary_prefix.py",
             "src/aroll_v21/quality/final_visible_repair/rules/word_span_edit.py",
+            "src/aroll_v21/quality/final_semantic_integrity.py",
             "src/aroll_v21/quality/visual_pacing/report.py",
             "src/aroll_v21/writer/subtitle_identity_resolver.py",
         }

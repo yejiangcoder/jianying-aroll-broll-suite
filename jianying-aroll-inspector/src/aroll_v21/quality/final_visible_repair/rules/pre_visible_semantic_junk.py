@@ -16,6 +16,8 @@ MIN_ISOLATED_SHORT_FRAGMENT_SOURCE_GAP_US = 300_000
 
 
 MIN_ISOLATED_SHORT_FRAGMENT_NEIGHBOR_CHARS = 6
+ACTION_ASPECT_TAILS = ("着", "了", "过")
+DEPENDENT_OBJECT_HEAD_PREFIXES = tuple("个件条张节款台辆本套部名位份颗枚只")
 
 
 def _repair_pre_visible_semantic_junk_candidate(
@@ -167,6 +169,8 @@ def _is_isolated_short_source_gap_fragment(
     next_caption = ordered[index + 1]
     previous_text = normalize_text(str(previous.text or ""))
     next_text = normalize_text(str(next_caption.text or ""))
+    if _looks_like_action_fragment_before_dependent_object(text, next_text):
+        return False
     if len(previous_text) < MIN_ISOLATED_SHORT_FRAGMENT_NEIGHBOR_CHARS:
         return False
     if len(next_text) < MIN_ISOLATED_SHORT_FRAGMENT_NEIGHBOR_CHARS:
@@ -184,3 +188,11 @@ def _is_isolated_short_source_gap_fragment(
         previous_gap_us >= MIN_ISOLATED_SHORT_FRAGMENT_SOURCE_GAP_US
         and next_gap_us >= MIN_ISOLATED_SHORT_FRAGMENT_SOURCE_GAP_US
     )
+
+
+def _looks_like_action_fragment_before_dependent_object(text: str, next_text: str) -> bool:
+    if len(text) < 2 or not next_text:
+        return False
+    if not text.endswith(ACTION_ASPECT_TAILS):
+        return False
+    return next_text[0] in DEPENDENT_OBJECT_HEAD_PREFIXES

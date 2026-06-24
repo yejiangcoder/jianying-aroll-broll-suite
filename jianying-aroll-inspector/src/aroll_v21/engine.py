@@ -4,6 +4,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
+from aroll_final_repeat_gate import build_final_repeat_gate_report
 from aroll_text_normalize import normalize_text
 from aroll_v21.compiler import FinalTimelineCompiler
 from aroll_v21.decision import (
@@ -35,7 +36,7 @@ from aroll_v21.engine_summary import build_run_summary, _normalize_effective_spe
 from aroll_v21.evidence import CandidateEvidenceBuilder
 from aroll_v21.ingest import DraftIngest
 from aroll_v21.ir.models import Blocker, BlockerReport, RunReport
-from aroll_v21.quality import VisualPacingNormalizer, build_visual_pacing_report
+from aroll_v21.quality import VisualPacingNormalizer
 from aroll_v21.quality.final_caption_visible_repeat import build_final_caption_visible_repeat_gate
 from aroll_v21.quality.final_visible_caption_repair import repair_final_visible_caption_issues
 from aroll_v21.quality.quality_gate import build_quality_gate_report
@@ -189,24 +190,74 @@ class ArollEngine:
         final_timeline = self._drop_deterministic_self_repair_aborted_segments(final_timeline, decision_plan)
         final_timeline, visual_pacing_report = self.visual_pacing.normalize(final_timeline, source_graph)
         captions = self.renderer.render(final_timeline, source_graph)
-        final_visible_repair = repair_final_visible_caption_issues(
-            final_timeline=final_timeline,
-            captions=captions,
-            source_graph=source_graph,
-            render_captions=lambda timeline: self.renderer.render(timeline, source_graph),
-        )
-        final_timeline = final_visible_repair.final_timeline
-        captions = final_visible_repair.captions
-        if int(final_visible_repair.report.get("final_visible_repair_action_count") or 0) > 0:
-            visual_pacing_report = build_visual_pacing_report(
+        before_final_target_cleanup_signature = self._final_timeline_state_signature(final_timeline)
+        final_timeline = self._drop_final_target_aborted_caption_restarts(final_timeline, captions, source_graph, decision_plan)
+        if self._final_timeline_state_signature(final_timeline) != before_final_target_cleanup_signature:
+            final_timeline, visual_pacing_report = self.visual_pacing.normalize(final_timeline, source_graph)
+            captions = self.renderer.render(final_timeline, source_graph)
+        final_visible_repair_reports: list[dict[str, Any]] = []
+        visual_pacing_rerun_after_final_repair_count = 0
+        final_visible_repair_max_cycle_exhausted = False
+        max_final_visible_repair_cycles = 8
+        for cycle_index in range(max_final_visible_repair_cycles):
+            state_before_repair = self._final_visible_state_signature(final_timeline, captions)
+            final_visible_repair = repair_final_visible_caption_issues(
                 final_timeline=final_timeline,
                 captions=captions,
-                executed=True,
                 source_graph=source_graph,
-                merge_report={
-                    **dict(visual_pacing_report or {}),
-                    "final_visible_repair_action_count": int(final_visible_repair.report.get("final_visible_repair_action_count") or 0),
-                },
+                render_captions=lambda timeline: self.renderer.render(timeline, source_graph),
+            )
+            final_visible_repair_reports.append(final_visible_repair.report)
+            final_timeline = final_visible_repair.final_timeline
+            captions = final_visible_repair.captions
+            state_after_repair = self._final_visible_state_signature(final_timeline, captions)
+            if int(final_visible_repair.report.get("final_visible_repair_action_count") or 0) <= 0:
+                break
+            if state_after_repair == state_before_repair:
+                break
+            if cycle_index + 1 >= max_final_visible_repair_cycles:
+                final_visible_repair_max_cycle_exhausted = True
+                break
+            timeline_before_pacing_signature = self._final_timeline_state_signature(final_timeline)
+            captions_before_pacing = list(captions)
+            final_timeline, visual_pacing_report = self.visual_pacing.normalize(final_timeline, source_graph)
+            if self._final_timeline_state_signature(final_timeline) == timeline_before_pacing_signature:
+                captions = captions_before_pacing
+            else:
+                captions = self.renderer.render(final_timeline, source_graph)
+            visual_pacing_rerun_after_final_repair_count += 1
+        final_visible_repair_report = self._combined_final_visible_repair_report(
+            final_visible_repair_reports,
+            visual_pacing_rerun_after_final_repair_count=visual_pacing_rerun_after_final_repair_count,
+            max_cycle_exhausted=final_visible_repair_max_cycle_exhausted,
+        )
+        before_post_repair_final_target_cleanup_signature = self._final_timeline_state_signature(final_timeline)
+        final_timeline = self._drop_final_target_aborted_caption_restarts(final_timeline, captions, source_graph, decision_plan)
+        if self._final_timeline_state_signature(final_timeline) != before_post_repair_final_target_cleanup_signature:
+            final_timeline, visual_pacing_report = self.visual_pacing.normalize(final_timeline, source_graph)
+            captions = self.renderer.render(final_timeline, source_graph)
+            post_cleanup_repair = repair_final_visible_caption_issues(
+                final_timeline=final_timeline,
+                captions=captions,
+                source_graph=source_graph,
+                render_captions=lambda timeline: self.renderer.render(timeline, source_graph),
+            )
+            final_visible_repair_reports.append(post_cleanup_repair.report)
+            final_timeline = post_cleanup_repair.final_timeline
+            captions = post_cleanup_repair.captions
+            if int(post_cleanup_repair.report.get("final_visible_repair_action_count") or 0) > 0:
+                timeline_before_pacing_signature = self._final_timeline_state_signature(final_timeline)
+                captions_before_pacing = list(captions)
+                final_timeline, visual_pacing_report = self.visual_pacing.normalize(final_timeline, source_graph)
+                if self._final_timeline_state_signature(final_timeline) == timeline_before_pacing_signature:
+                    captions = captions_before_pacing
+                else:
+                    captions = self.renderer.render(final_timeline, source_graph)
+                visual_pacing_rerun_after_final_repair_count += 1
+            final_visible_repair_report = self._combined_final_visible_repair_report(
+                final_visible_repair_reports,
+                visual_pacing_rerun_after_final_repair_count=visual_pacing_rerun_after_final_repair_count,
+                max_cycle_exhausted=final_visible_repair_max_cycle_exhausted,
             )
         self._sync_semantic_gate_with_final_output(decision_plan, final_timeline, captions)
         self._refresh_semantic_adjudication_report(decision_plan)
@@ -235,7 +286,7 @@ class ArollEngine:
             postwrite_materials=inputs.postwrite_materials,
             postwrite_mode=inputs.postwrite_mode,
         )
-        validator_report["final_visible_caption_repair_report"] = final_visible_repair.report
+        validator_report["final_visible_caption_repair_report"] = final_visible_repair_report
         validator_report = self._attach_final_caption_visible_repeat_gate(validator_report, captions)
         consistency_blockers = self._semantic_request_consistency_blockers(decision_plan, validator_report)
         if consistency_blockers:
@@ -325,6 +376,232 @@ class ArollEngine:
             blocker_report=blocker_report,
             decision_trace=decision_plan.decision_trace,
         )
+
+    def _combined_final_visible_repair_report(
+        self,
+        reports: list[dict[str, Any]],
+        *,
+        visual_pacing_rerun_after_final_repair_count: int,
+        max_cycle_exhausted: bool,
+    ) -> dict[str, Any]:
+        if not reports:
+            return {
+                "final_visible_repair_enabled": True,
+                "final_visible_repair_attempted": False,
+                "final_visible_repair_success": True,
+                "final_visible_repair_action_count": 0,
+                "final_visible_repair_actions": [],
+                "final_visible_repair_visual_pacing_rerun_count": int(
+                    visual_pacing_rerun_after_final_repair_count
+                ),
+                "final_visible_repair_cycle_count": 0,
+                "final_visible_repair_max_cycle_exhausted": bool(max_cycle_exhausted),
+            }
+        combined = dict(reports[-1])
+        all_actions: list[dict[str, Any]] = []
+        all_unresolved: list[dict[str, Any]] = []
+        for report in reports:
+            all_actions.extend(
+                [dict(row) for row in list(report.get("final_visible_repair_actions") or []) if isinstance(row, dict)]
+            )
+            all_unresolved.extend(
+                [dict(row) for row in list(report.get("final_visible_repair_unresolved") or []) if isinstance(row, dict)]
+            )
+        combined["final_visible_repair_attempted"] = bool(
+            combined.get("final_visible_repair_attempted")
+            or all_actions
+            or any(bool(report.get("final_visible_repair_attempted")) for report in reports)
+        )
+        combined["final_visible_repair_success"] = bool(combined.get("final_visible_repair_success")) and not bool(max_cycle_exhausted)
+        combined["final_visible_repair_action_count"] = len(all_actions)
+        combined["final_visible_repair_actions"] = all_actions
+        combined["final_visible_repair_unresolved"] = all_unresolved
+        combined["final_visible_repair_cycle_count"] = len(reports)
+        combined["final_visible_repair_visual_pacing_rerun_count"] = int(visual_pacing_rerun_after_final_repair_count)
+        combined["final_visible_repair_max_cycle_exhausted"] = bool(max_cycle_exhausted)
+        combined["final_visible_repair_passes_executed_total"] = sum(
+            int(report.get("final_visible_repair_passes_executed") or 0)
+            for report in reports
+        )
+        if max_cycle_exhausted:
+            combined["final_visible_repair_stop_reason"] = "max_repair_cycles_exhausted"
+            all_unresolved.append(
+                {
+                    "reason": "max_repair_cycles_exhausted",
+                    "cycle_count": len(reports),
+                    "visual_pacing_rerun_count": int(visual_pacing_rerun_after_final_repair_count),
+                }
+            )
+        return combined
+
+    def _final_visible_state_signature(self, final_timeline, captions) -> tuple[Any, ...]:
+        segment_signature = self._final_timeline_state_signature(final_timeline)
+        caption_signature = tuple(
+            (
+                str(caption.caption_id),
+                tuple(str(segment_id) for segment_id in list(caption.timeline_segment_ids or [])),
+                normalize_text(str(caption.text or "")),
+                int(caption.target_start_us),
+                int(caption.target_end_us),
+            )
+            for caption in list(captions or [])
+        )
+        return segment_signature, caption_signature
+
+    def _final_timeline_state_signature(self, final_timeline) -> tuple[Any, ...]:
+        return tuple(
+            (
+                str(segment.segment_id),
+                tuple(str(word_id) for word_id in list(segment.word_ids or [])),
+                normalize_text(str(segment.text or "")),
+                int(segment.source_start_us),
+                int(segment.source_end_us),
+                int(segment.target_start_us),
+                int(segment.target_end_us),
+            )
+            for segment in list(final_timeline or [])
+        )
+
+    def _drop_final_target_aborted_caption_restarts(
+        self,
+        final_timeline,
+        captions,
+        source_graph,
+        decision_plan,
+    ):
+        caption_rows = [
+            {
+                "fragment_id": caption.caption_id,
+                "fragment_text": caption.text,
+                "text": caption.text,
+                "word_ids": list(caption.word_ids),
+                "target_start_us": int(caption.target_start_us),
+                "target_duration_us": int(caption.target_end_us) - int(caption.target_start_us),
+                "source_subtitle_uids": list(caption.source_subtitle_uids),
+            }
+            for caption in captions
+        ]
+        repeat_report = build_final_repeat_gate_report({"issues": []}, caption_rows)
+        caption_by_id = {str(caption.caption_id): caption for caption in captions}
+        drop_caption_ids: set[str] = set()
+        trace_rows: list[dict[str, Any]] = []
+        for candidate in list(repeat_report.get("final_target_repeat_candidates") or []):
+            if not isinstance(candidate, dict):
+                continue
+            if str(candidate.get("cluster_type") or "") != "semantic_containment_take":
+                continue
+            aborted_takes = [
+                row for row in list(candidate.get("candidates") or [])
+                if isinstance(row, dict) and bool(row.get("is_aborted_start"))
+            ]
+            completed_takes = [
+                row for row in list(candidate.get("candidates") or [])
+                if isinstance(row, dict) and not bool(row.get("is_aborted_start"))
+            ]
+            if len(aborted_takes) != 1 or not completed_takes:
+                continue
+            aborted = aborted_takes[0]
+            completed_start = min(int(row.get("source_start_us") or 0) for row in completed_takes)
+            if int(aborted.get("source_end_us") or 0) > completed_start:
+                continue
+            matched_caption_ids = self._caption_ids_matching_final_target_take(candidate, aborted, caption_by_id)
+            if not matched_caption_ids:
+                continue
+            drop_caption_ids.update(matched_caption_ids)
+            cluster_id = self._normalized_final_target_cluster_id(str(candidate.get("cluster_id") or ""))
+            trace_rows.append(
+                {
+                    "route": "final_target_repeat",
+                    "cluster_id": cluster_id,
+                    "decision": "drop_aborted_caption_restart",
+                    "applied": True,
+                    "reason": "deterministic final-target cleanup drops aborted start before completed restart",
+                    "dropped_caption_ids": sorted(matched_caption_ids),
+                    "dropped_segment_indices": [
+                        int(item.get("subtitle_index") or 0)
+                        for item in list(candidate.get("items") or [])
+                        if str(item.get("subtitle_uid") or "") in matched_caption_ids
+                    ],
+                }
+            )
+        if not drop_caption_ids:
+            return final_timeline
+        drop_word_ids = {
+            str(word_id)
+            for caption_id in drop_caption_ids
+            for word_id in list(caption_by_id.get(caption_id).word_ids if caption_by_id.get(caption_id) else [])
+        }
+        if not drop_word_ids:
+            return final_timeline
+        word_lookup = {word.word_id: word for word in source_graph.words}
+        kept_bounds_by_segment = self._caption_bounds_by_segment(captions, drop_caption_ids)
+        cleaned = []
+        for segment in final_timeline:
+            new_word_ids = [str(word_id) for word_id in list(segment.word_ids or []) if str(word_id) not in drop_word_ids]
+            if len(new_word_ids) == len(list(segment.word_ids or [])):
+                cleaned.append(segment)
+                continue
+            if not new_word_ids:
+                continue
+            words = [word_lookup[word_id] for word_id in new_word_ids if word_id in word_lookup]
+            if not words:
+                continue
+            target_bounds = kept_bounds_by_segment.get(str(segment.segment_id))
+            target_start = int(target_bounds[0]) if target_bounds else int(segment.target_start_us)
+            target_end = int(target_bounds[1]) if target_bounds else int(segment.target_end_us)
+            cleaned.append(
+                replace(
+                    segment,
+                    word_ids=new_word_ids,
+                    text="".join(str(word.text or "") for word in words),
+                    source_start_us=min(int(word.source_start_us) for word in words),
+                    source_end_us=max(int(word.source_end_us) for word in words),
+                    target_start_us=target_start,
+                    target_end_us=max(target_start, target_end),
+                    decision_ids=sorted(set([*segment.decision_ids, "final_target_aborted_caption_restart_drop"])),
+                )
+            )
+        decision_plan.decision_trace.extend(trace_rows)
+        return self._repack_final_timeline(cleaned)
+
+    def _caption_ids_matching_final_target_take(self, candidate: dict[str, Any], take: dict[str, Any], caption_by_id: dict[str, Any]) -> set[str]:
+        take_text = normalize_text(str(take.get("text") or ""))
+        take_start = int(take.get("source_start_us") or 0)
+        take_end = int(take.get("source_end_us") or 0)
+        matches: set[str] = set()
+        for item in list(candidate.get("items") or []):
+            if not isinstance(item, dict):
+                continue
+            caption_id = str(item.get("subtitle_uid") or "")
+            caption = caption_by_id.get(caption_id)
+            if caption is None:
+                continue
+            if normalize_text(str(item.get("text") or "")) != take_text:
+                continue
+            if int(item.get("start_us") or 0) != take_start or int(item.get("end_us") or 0) != take_end:
+                continue
+            matches.add(caption_id)
+        return matches
+
+    def _caption_bounds_by_segment(self, captions, drop_caption_ids: set[str]) -> dict[str, tuple[int, int]]:
+        bounds: dict[str, tuple[int, int]] = {}
+        for caption in captions:
+            if str(caption.caption_id) in drop_caption_ids:
+                continue
+            for segment_id in list(caption.timeline_segment_ids or []):
+                key = str(segment_id)
+                current = bounds.get(key)
+                start = int(caption.target_start_us)
+                end = int(caption.target_end_us)
+                if current is None:
+                    bounds[key] = (start, end)
+                    continue
+                bounds[key] = (min(current[0], start), max(current[1], end))
+        return bounds
+
+    def _normalized_final_target_cluster_id(self, cluster_id: str) -> str:
+        raw = str(cluster_id or "")
+        return raw if raw.startswith("final_target_repeat_") else f"final_target_repeat_{raw}"
 
     def _sync_semantic_gate_with_final_output(
         self,

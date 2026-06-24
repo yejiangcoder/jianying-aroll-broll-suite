@@ -13,6 +13,7 @@ MIN_CAPTION_CHARS = 3
 PREFERRED_MIN_SEGMENT_DURATION_US = 700_000
 DEFAULT_LEAD_HANDLE_US = 220_000
 DEFAULT_TAIL_HANDLE_US = 220_000
+ADAPTIVE_CONTENT_LEAD_HANDLE_US = 320_000
 SOURCE_GAP_MERGE_LIMIT_US = 1_500_000
 WEAK_FILLER_MICRO_TEXTS = {"呃", "嗯", "啊", "额", "呐", "哎", "诶", "哦", "噢", "喔", "唉"}
 STRUCTURAL_FUNCTION_MICRO_TEXTS = {"的", "就", "是", "了", "在"}
@@ -422,7 +423,8 @@ class RoughCutQualityNormalizer:
             spoken_end = int(segment.source_end_us)
             window = self._window_for_range(source_windows, spoken_start, spoken_end)
             window_lower, window_upper = window if window is not None else (lower, upper)
-            clip_start = max(window_lower, spoken_start - DEFAULT_LEAD_HANDLE_US)
+            requested_lead_us = self._requested_lead_handle_us(segment, index)
+            clip_start = max(window_lower, spoken_start - requested_lead_us)
             clip_end = min(window_upper, spoken_end + DEFAULT_TAIL_HANDLE_US)
             if index > 0:
                 previous = handled[-1]
@@ -441,8 +443,9 @@ class RoughCutQualityNormalizer:
                     "safe_handle_policy_enabled": True,
                     "safe_handle_source_window_start_us": int(window_lower),
                     "safe_handle_source_window_end_us": int(window_upper),
-                    "safe_handle_requested_lead_us": int(DEFAULT_LEAD_HANDLE_US),
+                    "safe_handle_requested_lead_us": int(requested_lead_us),
                     "safe_handle_requested_tail_us": int(DEFAULT_TAIL_HANDLE_US),
+                    "safe_handle_adaptive_content_lead_enabled": bool(requested_lead_us > DEFAULT_LEAD_HANDLE_US),
                 }
             )
             handled.append(
@@ -458,6 +461,16 @@ class RoughCutQualityNormalizer:
                 )
             )
         return handled
+
+    def _requested_lead_handle_us(self, segment: FinalTimelineSegment, index: int) -> int:
+        if index <= 0:
+            return DEFAULT_LEAD_HANDLE_US
+        text = normalize_text(segment.text)
+        if len(text) < MIN_CAPTION_CHARS:
+            return DEFAULT_LEAD_HANDLE_US
+        if text in WEAK_FILLER_MICRO_TEXTS:
+            return DEFAULT_LEAD_HANDLE_US
+        return ADAPTIVE_CONTENT_LEAD_HANDLE_US
 
     def _source_bounds(self, source_graph: CanonicalSourceGraph) -> tuple[int, int]:
         starts: list[int] = []

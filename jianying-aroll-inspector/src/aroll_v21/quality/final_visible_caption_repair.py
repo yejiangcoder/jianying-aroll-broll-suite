@@ -67,6 +67,7 @@ from aroll_v21.quality.final_caption_visible_repeat import (
     build_final_caption_visible_repeat_gate,
     _dangling_pronoun_modal_suffix,
 )
+from aroll_v21.quality.final_semantic_integrity import dangling_discourse_connector_suffix
 from aroll_v21.quality.pre_visible_semantic_junk_candidate_detector import (
     MIN_HIGH_CONFIDENCE as PRE_VISIBLE_SEMANTIC_JUNK_MIN_HIGH_CONFIDENCE,
     build_pre_visible_semantic_junk_candidate_report,
@@ -1591,6 +1592,131 @@ def _repair_next_issue(
             step = _trim_asr_restart_prefix(final_timeline, captions, source_graph, candidate, pass_index)
             if step is not None:
                 return step
+    if issue_types is None or "semantic_integrity" in issue_types:
+        for candidate in list(gate.get("semantic_integrity_candidates") or []):
+            step = _repair_semantic_integrity_issue(final_timeline, captions, source_graph, candidate, pass_index)
+            if step is not None:
+                return step
+    no_step: _RepairStep | None = None
+    return no_step
+
+
+def _repair_semantic_integrity_issue(
+    final_timeline: list[FinalTimelineSegment],
+    captions: list[CaptionRenderUnit],
+    source_graph: CanonicalSourceGraph,
+    candidate: dict[str, Any],
+    pass_index: int,
+) -> _RepairStep | None:
+    reason = str(candidate.get("reason") or "")
+    caption = _caption_by_id(captions, str(candidate.get("caption_id") or ""))
+    if caption is None:
+        no_step: _RepairStep | None = None
+        return no_step
+    if reason in {
+        "opening_vocalization_residual",
+        "non_primary_device_prompt_residual",
+        "short_abandoned_open_clause",
+        "previous_complete_prefix_retry",
+    }:
+        dropped = _drop_or_trim_caption_words(final_timeline, captions, source_graph, caption)
+        if dropped is None:
+            no_step: _RepairStep | None = None
+            return no_step
+        repaired_timeline, dropped_segment_ids, trimmed_segment_ids = dropped
+        return _RepairStep(
+            final_timeline=repaired_timeline,
+            captions=captions,
+            timeline_changed=True,
+            action=_action(
+                "semantic_integrity",
+                "drop_semantic_integrity_residual",
+                pass_index,
+                candidate,
+                affected_caption_ids=[caption.caption_id],
+                dropped_segment_ids=dropped_segment_ids,
+                trimmed_segment_ids=trimmed_segment_ids,
+                dropped_word_ids=list(caption.word_ids),
+                dropped_text=str(caption.text or ""),
+            ),
+        )
+    if reason == "repeated_interjection_residual":
+        repeat_text = normalize_text(str((candidate.get("evidence") or {}).get("repeat_text") or ""))
+        caption_text = normalize_text(caption.text)
+        if len(repeat_text) < 2 or not caption_text.endswith(repeat_text):
+            no_step: _RepairStep | None = None
+            return no_step
+        drop_text = repeat_text[1:]
+        drop_word_ids = _trailing_word_ids_for_text(caption.word_ids, source_graph, drop_text)
+        if not drop_word_ids:
+            fused_word_ids = _trailing_word_ids_for_text(caption.word_ids, source_graph, repeat_text)
+            if fused_word_ids:
+                drop_text = repeat_text
+                drop_word_ids = fused_word_ids
+        if not drop_word_ids or len(drop_word_ids) >= len(caption.word_ids):
+            no_step: _RepairStep | None = None
+            return no_step
+        repaired_timeline = _trim_word_ids_from_timeline(final_timeline, source_graph, drop_word_ids)
+        if repaired_timeline is None:
+            no_step: _RepairStep | None = None
+            return no_step
+        return _RepairStep(
+            final_timeline=repaired_timeline,
+            captions=captions,
+            timeline_changed=True,
+            action=_action(
+                "semantic_integrity",
+                "trim_duplicate_interjection_tail",
+                pass_index,
+                candidate,
+                affected_caption_ids=[caption.caption_id],
+                dropped_word_ids=drop_word_ids,
+                drop_text=drop_text,
+            ),
+        )
+    if reason in {
+        "open_coordination_tail",
+        "single_char_false_start_tail",
+        "truncated_nominal_prefix_tail",
+        "dangling_discourse_connector_tail",
+        "incomplete_lexical_tail",
+        "local_recurrence_with_open_tail",
+    }:
+        drop_text = str(candidate.get("overlap_text") or "")
+        dangling_connector = dangling_discourse_connector_suffix(str(caption.text or ""))
+        if reason in {"dangling_discourse_connector_tail", "incomplete_lexical_tail", "local_recurrence_with_open_tail"}:
+            if not dangling_connector:
+                no_step: _RepairStep | None = None
+                return no_step
+            drop_text = dangling_connector
+        if reason == "single_char_false_start_tail":
+            drop_text = normalize_text(str(caption.text or ""))[-1:]
+        if reason == "truncated_nominal_prefix_tail":
+            caption_text = normalize_text(caption.text)
+            if len(caption_text) >= 2 and caption_text[-2] in {"的", "地", "得"}:
+                drop_text = caption_text[-2:]
+        drop_word_ids = _trailing_word_ids_for_text(caption.word_ids, source_graph, drop_text)
+        if not drop_word_ids or len(drop_word_ids) >= len(caption.word_ids):
+            no_step: _RepairStep | None = None
+            return no_step
+        repaired_timeline = _trim_word_ids_from_timeline(final_timeline, source_graph, drop_word_ids)
+        if repaired_timeline is None:
+            no_step: _RepairStep | None = None
+            return no_step
+        return _RepairStep(
+            final_timeline=repaired_timeline,
+            captions=captions,
+            timeline_changed=True,
+            action=_action(
+                "semantic_integrity",
+                "trim_open_semantic_tail",
+                pass_index,
+                candidate,
+                affected_caption_ids=[caption.caption_id],
+                dropped_word_ids=drop_word_ids,
+                drop_text=drop_text,
+            ),
+        )
     no_step: _RepairStep | None = None
     return no_step
 
