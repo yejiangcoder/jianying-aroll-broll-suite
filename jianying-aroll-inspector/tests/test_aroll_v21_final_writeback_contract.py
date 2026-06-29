@@ -272,6 +272,105 @@ class ArollV21FinalWritebackContractTests(unittest.TestCase):
         )
         self.assertEqual(segments[3]["target_timerange"], {"start": 300_000, "duration": 90_000})
 
+    def test_gapless_projection_expands_single_caption_to_safe_handle_video_range(self) -> None:
+        words = [
+            CanonicalWord(
+                word_id="w1",
+                text="所以",
+                normalized_text="所以",
+                source_start_us=80_000,
+                source_end_us=280_000,
+                source_material_id="mat",
+                source_segment_id="src",
+                subtitle_uid="s001",
+                subtitle_index=1,
+                char_start=None,
+                char_end=None,
+                confidence=None,
+                is_cuttable_left=True,
+                is_cuttable_right=True,
+            )
+        ]
+        report = RunReport(
+            status="ok",
+            source_graph=CanonicalSourceGraph(
+                words=words,
+                edit_units=[],
+                subtitle_rows=[],
+                source_materials=[],
+                source_segments=[],
+                text_materials=[],
+                text_segments=[],
+                invariant_report=SourceGraphInvariantReport(
+                    single_source_graph_ok=True,
+                    all_words_have_source_time=True,
+                    all_edit_units_have_word_ids=True,
+                    unbound_word_count=0,
+                    unbound_subtitle_count=0,
+                    blocker_count=0,
+                ),
+            ),
+            repeat_clusters=[],
+            decision_plan=None,
+            final_timeline=[
+                FinalTimelineSegment(
+                    segment_id="seg1",
+                    source_material_id="mat",
+                    source_segment_id="src",
+                    source_start_us=80_000,
+                    source_end_us=280_000,
+                    target_start_us=0,
+                    target_end_us=200_000,
+                    word_ids=["w1"],
+                    text="所以",
+                    decision_ids=[],
+                    spoken_source_start_us=80_000,
+                    spoken_source_end_us=280_000,
+                    clip_source_start_us=80_000,
+                    clip_source_end_us=380_000,
+                    lead_handle_us=0,
+                    tail_handle_us=100_000,
+                    debug_hints={
+                        "safe_handle_policy_enabled": True,
+                        "safe_handle_source_window_start_us": 80_000,
+                        "safe_handle_source_window_end_us": 380_000,
+                        "safe_handle_previous_target_end_us": 0,
+                        "safe_handle_next_target_start_us": 300_000,
+                    },
+                )
+            ],
+            captions=[
+                CaptionRenderUnit(
+                    "cap1",
+                    ["seg1"],
+                    ["w1"],
+                    "所以",
+                    0,
+                    200_000,
+                    ["s001"],
+                    "caption_template",
+                    spoken_source_start_us=80_000,
+                    spoken_source_end_us=280_000,
+                    containing_video_segment_id="seg1",
+                )
+            ],
+            material_write_plan={
+                "segments": [
+                    {"id": "caption_seg_1", "material_id": "caption_mat_1", "target_timerange": {"start": 0, "duration": 200_000}}
+                ],
+            },
+            validator_report={},
+            postwrite_report={},
+            blocker_report=BlockerReport(blocked=False, blockers=[]),
+        )
+
+        projection = RealDraftWriteback()._gapless_caption_video_projection_plan(report)
+        segments = [dict(row) for row in report.material_write_plan["segments"]]
+        RealDraftWriteback()._apply_gapless_caption_ranges(segments, report.captions, projection["caption_target_ranges"])
+
+        self.assertEqual(projection["caption_target_ranges"]["cap1"], {"target_start_us": 0, "target_end_us": 300_000})
+        self.assertEqual(segments[0]["target_timerange"], {"start": 0, "duration": 300_000})
+
     def test_mixed_selected_text_track_cleans_old_subtitles_preserves_callout_and_writes_captions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

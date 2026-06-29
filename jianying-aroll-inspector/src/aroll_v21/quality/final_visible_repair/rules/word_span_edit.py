@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
+from aroll_text_normalize import normalize_text
+from aroll_v21.ir.models import CanonicalSourceGraph, CaptionRenderUnit, FinalTimelineSegment
+from aroll_v21.quality.final_visible_repair.report import _is_prefix, _is_suffix, _unique
+from aroll_v21.quality.final_visible_repair.timeline_utils import (
+    caption_segment_ids as _caption_segment_ids,
+    segment_duration_us as _segment_duration_us,
+    text_from_word_ids as _text_from_word_ids,
+)
+from aroll_v21.quality.subtitle_readability import HARD_MAX_CHARS, HARD_MAX_DURATION_US
 
-def configure_rule_dependencies(dependencies: dict[str, Any]) -> None:
-    globals().update(dependencies)
+
+MIN_REPAIRED_SEGMENT_DURATION_US = 1_200_000
 
 
 def _drop_or_trim_caption_words(
@@ -224,3 +234,350 @@ def _contiguous_word_ids_for_text(
                 break
     empty: list[str] = []
     return empty
+
+
+def _segment_with_word_ids(
+    segment: FinalTimelineSegment,
+    word_ids: list[str],
+    source_graph: CanonicalSourceGraph,
+) -> FinalTimelineSegment | None:
+    words_by_id = {word.word_id: word for word in source_graph.words}
+    words = [words_by_id[word_id] for word_id in word_ids if word_id in words_by_id]
+    if len(words) != len(word_ids):
+        no_segment: FinalTimelineSegment | None = None
+        return no_segment
+    source_start_us = min(int(word.source_start_us) for word in words)
+    source_end_us = max(int(word.source_end_us) for word in words)
+    duration_us = max(0, source_end_us - source_start_us)
+    if duration_us <= 0:
+        no_segment: FinalTimelineSegment | None = None
+        return no_segment
+    return replace(
+        segment,
+        source_start_us=source_start_us,
+        source_end_us=source_end_us,
+        target_end_us=int(segment.target_start_us) + duration_us,
+        word_ids=list(word_ids),
+        text="".join(word.text for word in words),
+        spoken_source_start_us=source_start_us,
+        spoken_source_end_us=source_end_us,
+        clip_source_start_us=source_start_us if segment.clip_source_start_us is not None else segment.clip_source_start_us,
+        clip_source_end_us=source_end_us if segment.clip_source_end_us is not None else segment.clip_source_end_us,
+        debug_hints={**dict(segment.debug_hints or {}), "final_visible_repair": "trim_repeated_caption_words"},
+    )
+
+
+def _segment_with_word_ids_preserving_effective_speed(
+    segment: FinalTimelineSegment,
+    word_ids: list[str],
+    source_graph: CanonicalSourceGraph,
+    repair_reason: str,
+) -> FinalTimelineSegment | None:
+    words_by_id = {word.word_id: word for word in source_graph.words}
+    words = [words_by_id[word_id] for word_id in word_ids if word_id in words_by_id]
+    if len(words) != len(word_ids):
+        no_segment: FinalTimelineSegment | None = None
+        return no_segment
+    source_start_us = min(int(word.source_start_us) for word in words)
+    source_end_us = max(int(word.source_end_us) for word in words)
+    if source_end_us <= source_start_us:
+        no_segment: FinalTimelineSegment | None = None
+        return no_segment
+    target_duration_us = _target_duration_preserving_effective_speed(segment, source_start_us, source_end_us)
+    return replace(
+        segment,
+        source_start_us=source_start_us,
+        source_end_us=source_end_us,
+        target_end_us=int(segment.target_start_us) + target_duration_us,
+        word_ids=list(word_ids),
+        text="".join(word.text for word in words),
+        spoken_source_start_us=source_start_us,
+        spoken_source_end_us=source_end_us,
+        clip_source_start_us=source_start_us if segment.clip_source_start_us is not None else segment.clip_source_start_us,
+        clip_source_end_us=source_end_us if segment.clip_source_end_us is not None else segment.clip_source_end_us,
+        debug_hints={**dict(segment.debug_hints or {}), "final_visible_repair": repair_reason},
+    )
+
+
+def _segments_with_word_ids_preserving_effective_speed(
+    segment: FinalTimelineSegment,
+    word_ids: list[str],
+    source_graph: CanonicalSourceGraph,
+    repair_reason: str,
+    *,
+    existing_segment_ids: set[str],
+) -> list[FinalTimelineSegment] | None:
+    word_runs = _split_word_ids_on_unselected_source_words(word_ids, source_graph)
+    if not word_runs:
+        no_segments: list[FinalTimelineSegment] | None = None
+        return no_segments
+    if len(word_runs) == 1:
+        repaired = _segment_with_word_ids_preserving_effective_speed(segment, word_runs[0], source_graph, repair_reason)
+        if repaired is None:
+            no_segments: list[FinalTimelineSegment] | None = None
+            return no_segments
+        return [repaired]
+    repaired_segments: list[FinalTimelineSegment] = []
+    used_ids = set(existing_segment_ids)
+    for index, run_word_ids in enumerate(word_runs):
+        base = segment if index == 0 else replace(segment, segment_id=_unique_split_segment_id(segment.segment_id, used_ids))
+        used_ids.add(base.segment_id)
+        repaired = _segment_with_word_ids_preserving_effective_speed(base, run_word_ids, source_graph, repair_reason)
+        if repaired is None:
+            no_segments: list[FinalTimelineSegment] | None = None
+            return no_segments
+        repaired_segments.append(repaired)
+    return repaired_segments
+
+
+def _split_word_ids_on_unselected_source_words(
+    word_ids: list[str],
+    source_graph: CanonicalSourceGraph,
+) -> list[list[str]]:
+    words_by_id = {word.word_id: word for word in source_graph.words}
+    words = [words_by_id[word_id] for word_id in word_ids if word_id in words_by_id]
+    if len(words) != len(word_ids):
+        empty: list[list[str]] = []
+        return empty
+    selected_ids = set(word_ids)
+    runs: list[list[str]] = []
+    current: list[str] = []
+    previous_word: Any | None = None
+    for word in words:
+        if previous_word is not None and _source_gap_has_unselected_words_between_words(
+            previous_word,
+            word,
+            source_graph,
+            selected_ids,
+        ):
+            if current:
+                runs.append(current)
+            current = []
+        current.append(str(word.word_id))
+        previous_word = word
+    if current:
+        runs.append(current)
+    return runs
+
+
+def _source_gap_has_unselected_words_between_words(
+    left_word: Any,
+    right_word: Any,
+    source_graph: CanonicalSourceGraph,
+    selected_word_ids: set[str],
+) -> bool:
+    return _source_range_has_unselected_words(
+        source_graph=source_graph,
+        start_us=int(getattr(left_word, "source_end_us", 0) or 0),
+        end_us=int(getattr(right_word, "source_start_us", 0) or 0),
+        selected_word_ids=selected_word_ids,
+    )
+
+
+def _source_range_has_unselected_words(
+    *,
+    source_graph: CanonicalSourceGraph,
+    start_us: int,
+    end_us: int,
+    selected_word_ids: set[str],
+) -> bool:
+    if int(end_us) <= int(start_us):
+        return False
+    for word in source_graph.words:
+        word_id = str(getattr(word, "word_id", "") or "")
+        if not word_id or word_id in selected_word_ids:
+            continue
+        word_start_us = int(getattr(word, "source_start_us", 0) or 0)
+        word_end_us = int(getattr(word, "source_end_us", 0) or 0)
+        if word_end_us <= int(start_us) + 20_000 or word_start_us >= int(end_us) - 20_000:
+            continue
+        return True
+    return False
+
+
+def _source_bounds_for_word_ids(
+    word_ids: list[str],
+    source_graph: CanonicalSourceGraph,
+) -> tuple[int, int] | None:
+    words_by_id = {word.word_id: word for word in source_graph.words}
+    words = [words_by_id[word_id] for word_id in word_ids if word_id in words_by_id]
+    if not words or len(words) != len(word_ids):
+        no_bounds: tuple[int, int] | None = None
+        return no_bounds
+    source_start_us = min(int(word.source_start_us) for word in words)
+    source_end_us = max(int(word.source_end_us) for word in words)
+    if source_end_us <= source_start_us:
+        no_bounds: tuple[int, int] | None = None
+        return no_bounds
+    return source_start_us, source_end_us
+
+
+def _merged_segment_pair_preserving_effective_speed(
+    left: FinalTimelineSegment,
+    right: FinalTimelineSegment,
+    source_graph: CanonicalSourceGraph,
+    repair_reason: str,
+) -> FinalTimelineSegment:
+    merged_word_ids = [*left.word_ids, *right.word_ids]
+    text = _text_from_word_ids(merged_word_ids, source_graph) or f"{left.text}{right.text}"
+    bounds = _source_bounds_for_word_ids(merged_word_ids, source_graph)
+    if bounds is None:
+        source_start_us = int(left.source_start_us)
+        source_end_us = int(right.source_end_us)
+    else:
+        source_start_us, source_end_us = bounds
+    target_duration_us = _target_duration_preserving_effective_speed(left, source_start_us, source_end_us)
+    has_clip_bounds = any(
+        value is not None
+        for value in (
+            left.clip_source_start_us,
+            left.clip_source_end_us,
+            right.clip_source_start_us,
+            right.clip_source_end_us,
+        )
+    )
+    clip_start_us = None
+    clip_end_us = None
+    if has_clip_bounds:
+        clip_start_values = [
+            int(value)
+            for value in (left.clip_source_start_us, right.clip_source_start_us, source_start_us)
+            if value is not None
+        ]
+        clip_end_values = [
+            int(value)
+            for value in (left.clip_source_end_us, right.clip_source_end_us, source_end_us)
+            if value is not None
+        ]
+        clip_start_us = min(clip_start_values) if clip_start_values else source_start_us
+        clip_end_us = max(clip_end_values) if clip_end_values else source_end_us
+    return replace(
+        left,
+        source_start_us=source_start_us,
+        source_end_us=source_end_us,
+        target_end_us=int(left.target_start_us) + target_duration_us,
+        word_ids=merged_word_ids,
+        text=text,
+        decision_ids=_unique([*left.decision_ids, *right.decision_ids]),
+        spoken_source_start_us=source_start_us,
+        spoken_source_end_us=source_end_us,
+        clip_source_start_us=clip_start_us,
+        clip_source_end_us=clip_end_us,
+        tail_handle_us=max(int(left.tail_handle_us), int(right.tail_handle_us)),
+        debug_hints={
+            **dict(left.debug_hints or {}),
+            "final_visible_repair": repair_reason,
+            "merged_segment_ids": [left.segment_id, right.segment_id],
+        },
+    )
+
+
+def _target_duration_preserving_effective_speed(
+    segment: FinalTimelineSegment,
+    source_start_us: int,
+    source_end_us: int,
+) -> int:
+    new_source_duration_us = max(1, int(source_end_us) - int(source_start_us))
+    return new_source_duration_us
+
+
+def _unique_split_segment_id(base_segment_id: str, existing_segment_ids: set[str]) -> str:
+    for index in range(1, 1000):
+        candidate = f"{base_segment_id}_split_{index:03d}"
+        if candidate not in existing_segment_ids:
+            return candidate
+    return f"{base_segment_id}_split"
+
+
+def _caption_segments_exclusive(
+    caption: CaptionRenderUnit,
+    captions: list[CaptionRenderUnit],
+    segment_ids: list[str],
+) -> bool:
+    target = set(segment_ids)
+    for other in captions:
+        if other.caption_id == caption.caption_id:
+            continue
+        if target.intersection(_caption_segment_ids(other)):
+            return False
+    return True
+
+
+def _safe_merge_segments(
+    left: FinalTimelineSegment,
+    right: FinalTimelineSegment,
+    source_graph: CanonicalSourceGraph,
+) -> bool:
+    if str(left.source_material_id or "") and str(right.source_material_id or "") and str(left.source_material_id) != str(right.source_material_id):
+        return False
+    if str(left.source_segment_id or "") and str(right.source_segment_id or "") and str(left.source_segment_id) != str(right.source_segment_id):
+        return False
+    if int(left.target_end_us) <= int(left.target_start_us) or int(right.target_end_us) <= int(right.target_start_us):
+        return False
+    if int(right.target_start_us) < int(left.target_start_us):
+        return False
+    source_gap_us = int(right.source_start_us) - int(left.source_end_us)
+    if not -80_000 <= source_gap_us <= 1_500_000:
+        return False
+    return not _source_gap_has_unselected_words(left, right, source_graph)
+
+
+def _source_gap_has_unselected_words(
+    left: FinalTimelineSegment,
+    right: FinalTimelineSegment,
+    source_graph: CanonicalSourceGraph,
+) -> bool:
+    return _source_range_has_unselected_words(
+        source_graph=source_graph,
+        start_us=int(left.source_end_us),
+        end_us=int(right.source_start_us),
+        selected_word_ids=set(left.word_ids) | set(right.word_ids),
+    )
+
+
+def _merge_timeline_segment_pair_at(
+    segments: list[FinalTimelineSegment],
+    index: int,
+    source_graph: CanonicalSourceGraph,
+    repair_reason: str,
+) -> list[FinalTimelineSegment]:
+    left = segments[index]
+    right = segments[index + 1]
+    merged = _merged_segment_pair_preserving_effective_speed(left, right, source_graph, repair_reason)
+    return [*segments[:index], merged, *segments[index + 2 :]]
+
+
+def _merge_short_repaired_segments(
+    segments: list[FinalTimelineSegment],
+    source_graph: CanonicalSourceGraph,
+    repair_reason: str,
+) -> list[FinalTimelineSegment]:
+    current = list(segments)
+    while True:
+        merge_index: int | None = None
+        for index, segment in enumerate(current):
+            if str((segment.debug_hints or {}).get("final_visible_repair") or "") != repair_reason:
+                continue
+            if _segment_duration_us(segment) >= MIN_REPAIRED_SEGMENT_DURATION_US:
+                continue
+            candidates: list[int] = []
+            if index + 1 < len(current):
+                candidates.append(index)
+            if index > 0:
+                candidates.append(index - 1)
+            for candidate_index in candidates:
+                left = current[candidate_index]
+                right = current[candidate_index + 1]
+                if len(normalize_text(f"{left.text}{right.text}")) > HARD_MAX_CHARS:
+                    continue
+                if int(right.target_end_us) - int(left.target_start_us) > HARD_MAX_DURATION_US:
+                    continue
+                if not _safe_merge_segments(left, right, source_graph):
+                    continue
+                merge_index = candidate_index
+                break
+            if merge_index is not None:
+                break
+        if merge_index is None:
+            return current
+        current = _merge_timeline_segment_pair_at(current, merge_index, source_graph, "merge_short_repaired_segment")

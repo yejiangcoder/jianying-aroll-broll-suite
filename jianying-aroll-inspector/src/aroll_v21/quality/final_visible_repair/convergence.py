@@ -23,6 +23,12 @@ def _repair_state_signature(
             int(segment.source_end_us),
             int(segment.target_start_us),
             int(segment.target_end_us),
+            segment.spoken_source_start_us,
+            segment.spoken_source_end_us,
+            segment.clip_source_start_us,
+            segment.clip_source_end_us,
+            int(segment.lead_handle_us or 0),
+            int(segment.tail_handle_us or 0),
         )
         for segment in ordered_segments(final_timeline)
     )

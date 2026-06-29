@@ -1,10 +1,21 @@
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
-
-def configure_rule_dependencies(dependencies: dict[str, Any]) -> None:
-    globals().update(dependencies)
+from aroll_text_normalize import normalize_text
+from aroll_v21.ir.models import CanonicalSourceGraph, FinalTimelineSegment
+from aroll_v21.quality.final_visible_repair.context import FinalVisibleRepairContext
+from aroll_v21.quality.final_visible_repair.pipeline import FinalVisibleRepairState
+from aroll_v21.quality.final_visible_repair.report import _action, _unique
+from aroll_v21.quality.final_visible_repair.result import _RepairStep
+from aroll_v21.quality.final_visible_repair.rules.word_span_edit import (
+    _merged_segment_pair_preserving_effective_speed,
+    _safe_merge_segments,
+)
+from aroll_v21.quality.final_visible_repair.timeline_utils import segment_duration_us as _segment_duration_us
+from aroll_v21.quality.subtitle_readability import HARD_MAX_CHARS, HARD_MAX_DURATION_US
+from aroll_v21.quality.tiny_segment_classifier import classify_tiny_segment
 
 
 MIN_REPAIRED_SEGMENT_DURATION_US = 1_200_000
@@ -17,6 +28,25 @@ MAX_REPAIRED_RESIDUAL_DROP_CHARS = 2
 
 
 MIN_REBALANCED_CAPTION_DURATION_US = 300_000
+
+
+@dataclass(frozen=True)
+class ShortRepairResidualRule:
+    repair_short_repair_residual_segments: Callable[..., _RepairStep | None]
+    name: str = "repair_short_residual"
+
+    def try_repair(
+        self,
+        *,
+        context: FinalVisibleRepairContext,
+        state: FinalVisibleRepairState,
+        pass_index: int,
+    ) -> _RepairStep | None:
+        return self.repair_short_repair_residual_segments(
+            final_timeline=state.final_timeline,
+            source_graph=context.source_graph,
+            pass_index=pass_index,
+        )
 
 
 def _merge_short_repaired_segments(

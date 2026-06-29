@@ -20,6 +20,7 @@ def build_quality_gate_report(
     semantic_adjudication_gate: dict[str, Any] | None = None,
     visual_pacing_gate: dict[str, Any] | None = None,
     caption_alignment_gate: dict[str, Any] | None = None,
+    final_timeline_quality_guard_gate: dict[str, Any] | None = None,
     ready_for_user_manual_qc_preconditions_passed: bool = False,
 ) -> dict[str, Any]:
     missing = []
@@ -27,6 +28,8 @@ def build_quality_gate_report(
         missing.append("effective_speed_gate")
     if final_repeat_convergence_gate is None:
         missing.append("final_repeat_convergence_gate")
+    if final_caption_visible_repeat_gate is None:
+        missing.append("final_caption_visible_repeat_gate")
     if semantic_adjudication_gate is None:
         missing.append("semantic_adjudication_gate")
     if visual_pacing_gate is None:
@@ -65,6 +68,14 @@ def build_quality_gate_report(
         blocker_codes.append("V21_EFFECTIVE_SPEED_GATE_FAILED")
     if isinstance(final_caption_visible_repeat_gate, dict):
         blocker_codes.extend(str(code) for code in final_caption_visible_repeat_gate.get("blocker_codes") or [])
+    else:
+        blocker_codes.append("V21_FINAL_CAPTION_VISIBLE_REPEAT_GATE_MISSING")
+    final_timeline_quality_passed = True
+    if isinstance(final_timeline_quality_guard_gate, dict):
+        final_timeline_quality_passed = bool(final_timeline_quality_guard_gate.get("gate_passed"))
+        blocker_codes.extend(str(code) for code in final_timeline_quality_guard_gate.get("blocker_codes") or [])
+        if not final_timeline_quality_passed:
+            blocker_codes.append("V21_FINAL_TIMELINE_QUALITY_GUARD_FAILED")
     if semantic_adjudication_gate is not None:
         blocker_codes.extend(str(code) for code in semantic.get("blocker_codes") or [])
         if not bool(semantic.get("semantic_adjudication_gate_passed")):
@@ -141,10 +152,10 @@ def build_quality_gate_report(
     caption_repeat_passed = (
         bool(final_caption_visible_repeat_gate.get("gate_passed"))
         if isinstance(final_caption_visible_repeat_gate, dict)
-        else True
+        else False
     )
     semantic_passed = bool(semantic.get("semantic_adjudication_gate_passed"))
-    gate_passed = core_gate_passed and caption_repeat_passed and semantic_passed and not blocker_codes
+    gate_passed = core_gate_passed and caption_repeat_passed and semantic_passed and final_timeline_quality_passed and not blocker_codes
     payload = contract_to_dict(
         QualityGateReport(
             gate_passed=gate_passed,
@@ -192,10 +203,33 @@ def build_quality_gate_report(
             "visual_pacing_gate_present": visual_pacing_gate is not None,
             "caption_alignment_gate_present": caption_alignment_gate is not None,
             "final_caption_visible_repeat_gate_present": final_caption_visible_repeat_gate is not None,
+            "final_timeline_quality_guard_gate_present": final_timeline_quality_guard_gate is not None,
+            "final_timeline_quality_guard_gate_passed": final_timeline_quality_passed,
             "missing_required_gates": missing,
             "post_write_actual_draft_audit_required_on_commit": True,
         }
     )
+    if isinstance(final_timeline_quality_guard_gate, dict):
+        payload["final_timeline_quality_guard_gate"] = {
+            key: final_timeline_quality_guard_gate[key]
+            for key in (
+                "gate_passed",
+                "write_gate_passed",
+                "quality_guard_passed",
+                "candidate_count",
+                "high_risk_candidate_count",
+                "blocking_candidate_count",
+                "physical_blocking_candidate_count",
+                "caption_masking_candidate_count",
+                "candidate_type_counts",
+                "blocking_candidate_type_counts",
+                "blocker_codes",
+                "blocking_candidates",
+                "repair_intent_count",
+                "repair_intent_type_counts",
+            )
+            if key in final_timeline_quality_guard_gate
+        }
     if isinstance(final_caption_visible_repeat_gate, dict):
         payload["final_caption_visible_repeat_gate"] = {
             key: final_caption_visible_repeat_gate[key]

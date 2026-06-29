@@ -10,6 +10,7 @@ from aroll_v21.ir.models import CaptionRenderUnit, CanonicalSourceGraph, FinalTi
 from aroll_v21.quality.tiny_segment_classifier import classify_tiny_segment
 from aroll_v21.quality.visual_pacing.cut_density import (
     CUT_DENSITY_WINDOW_US,
+    MAX_CUTS_IN_5S,
     _cut_density_blockers,
     _cut_density_report,
     _cut_density_report_from_merge_report,
@@ -136,6 +137,17 @@ class VisualPacingNormalizer:
         current, large_intra_segment_gap_report = split_large_intra_segment_gaps(current, source_graph, windows)
         if large_intra_segment_gap_report["large_intra_segment_gap_split_count"]:
             current = _repack(current)
+            current, cut_density_relief_merged_count, cut_density_relief_unsafe_count = self._relieve_cut_density_bursts(
+                current,
+                source_graph,
+                windows,
+                word_lookup,
+            )
+            if cut_density_relief_merged_count:
+                attempted += cut_density_relief_merged_count
+                merged += cut_density_relief_merged_count
+                current = _repack(current)
+            unsafe_attempts += cut_density_relief_unsafe_count
         safety_report = _build_visual_merge_safety_report(
             current,
             source_graph,
@@ -308,6 +320,73 @@ class VisualPacingNormalizer:
                     return merge_index, unsafe_count
                 if _unsafe_micro_merge_attempt(group):
                     unsafe_count += 1
+        no_merge_index = None
+        return no_merge_index, unsafe_count
+
+    def _relieve_cut_density_bursts(
+        self,
+        segments: list[FinalTimelineSegment],
+        source_graph: CanonicalSourceGraph,
+        windows: list[tuple[str, int, int]],
+        word_lookup: dict[str, Any],
+    ) -> tuple[list[FinalTimelineSegment], int, int]:
+        current = list(segments)
+        merged = 0
+        unsafe_count = 0
+        while True:
+            if not _cut_density_blockers(_cut_density_report(current)):
+                return current, merged, unsafe_count
+            merge_index, iteration_unsafe_count = self._next_cut_density_relief_merge_index(
+                current,
+                source_graph,
+                windows,
+                word_lookup,
+            )
+            unsafe_count += iteration_unsafe_count
+            if merge_index is None:
+                return current, merged, unsafe_count
+            current = _repack(self._merge_at(current, merge_index))
+            merged += 1
+
+    def _next_cut_density_relief_merge_index(
+        self,
+        segments: list[FinalTimelineSegment],
+        source_graph: CanonicalSourceGraph,
+        windows: list[tuple[str, int, int]],
+        word_lookup: dict[str, Any],
+    ) -> tuple[int | None, int]:
+        window = _first_cut_density_burst_window(segments)
+        if window is None:
+            no_merge_index = None
+            return no_merge_index, 0
+        window_start, window_end = window
+        cut_indexes = [
+            index
+            for index in range(1, len(segments))
+            if window_start <= int(segments[index].target_start_us) < window_end
+        ]
+        candidate_indexes = sorted(
+            {index - 1 for index in cut_indexes if 0 <= index - 1 < len(segments) - 1},
+            key=lambda index: _cut_density_relief_merge_priority(segments[index], segments[index + 1], index),
+        )
+        unsafe_count = 0
+        for merge_index in candidate_indexes:
+            left = segments[merge_index]
+            right = segments[merge_index + 1]
+            if not (_is_allowed_semantic_bridge_exception(left) or _is_allowed_semantic_bridge_exception(right)):
+                continue
+            group = _build_merge_group(
+                left,
+                right,
+                source_graph,
+                windows,
+                word_lookup,
+                video_segment_id=left.segment_id,
+            )
+            if group.merge_safe:
+                return merge_index, unsafe_count
+            if _unsafe_micro_merge_attempt(group):
+                unsafe_count += 1
         no_merge_index = None
         return no_merge_index, unsafe_count
 
@@ -708,6 +787,27 @@ def _pad_segment_left(
 
 def _duration(segment: FinalTimelineSegment) -> int:
     return max(0, int(segment.target_end_us) - int(segment.target_start_us))
+
+
+def _first_cut_density_burst_window(segments: list[FinalTimelineSegment]) -> tuple[int, int] | None:
+    cut_times = [int(segment.target_start_us) for segment in list(segments)[1:]]
+    for index, start in enumerate(cut_times):
+        end = start + CUT_DENSITY_WINDOW_US
+        count = 0
+        for value in cut_times[index:]:
+            if value >= end:
+                break
+            count += 1
+        if count > MAX_CUTS_IN_5S:
+            return start, end
+    no_window: tuple[int, int] | None = None
+    return no_window
+
+
+def _cut_density_relief_merge_priority(left: FinalTimelineSegment, right: FinalTimelineSegment, index: int) -> tuple[int, int, int]:
+    bridge = _is_allowed_semantic_bridge_exception(left) or _is_allowed_semantic_bridge_exception(right)
+    short = _duration(left) < VISUAL_MIN_SEGMENT_DURATION_US or _duration(right) < VISUAL_MIN_SEGMENT_DURATION_US
+    return (0 if bridge else 1, 0 if short else 1, _duration(left) + _duration(right), index)
 
 
 def _short_count(segments: list[FinalTimelineSegment]) -> int:

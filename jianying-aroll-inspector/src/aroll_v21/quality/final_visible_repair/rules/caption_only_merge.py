@@ -1,12 +1,43 @@
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass, replace
+from typing import Any, Callable
+
+from aroll_text_normalize import normalize_text
+from aroll_v21.ir.models import CanonicalSourceGraph, CaptionRenderUnit, FinalTimelineSegment
+from aroll_v21.quality.final_caption_visible_repeat import build_final_caption_visible_repeat_gate
+from aroll_v21.quality.final_visible_repair.convergence import (
+    _caption_only_state_signature as _caption_only_state_signature_impl,
+)
+from aroll_v21.quality.final_visible_repair.context import FinalVisibleRepairContext
+from aroll_v21.quality.final_visible_repair.pipeline import (
+    FinalVisibleRepairRuleOutcome,
+    FinalVisibleRepairState,
+)
+from aroll_v21.quality.final_visible_repair.report import _action, _unique
+from aroll_v21.quality.final_visible_repair.result import _RepairStep
+from aroll_v21.quality.final_visible_repair.rules.restart_repeat import _partial_previous_tail_match
+from aroll_v21.quality.final_visible_repair.rules.source_boundary_prefix import (
+    _transfer_leading_function_prefix_to_previous_caption,
+)
+from aroll_v21.quality.final_visible_repair.rules.word_span_edit import (
+    _merged_segment_pair_preserving_effective_speed,
+    _safe_merge_segments,
+)
+from aroll_v21.quality.final_visible_repair.text_boundary import (
+    join_visible_boundary_text as _join_visible_boundary_text,
+    join_visible_caption_sequence_text as _join_visible_caption_sequence_text,
+)
+from aroll_v21.quality.final_visible_repair.timeline_utils import (
+    caption_index as _caption_index,
+    caption_segment_ids as _caption_segment_ids,
+    ordered_captions as _ordered_captions,
+    renumber_captions as _renumber_captions,
+)
+from aroll_v21.quality.subtitle_readability import HARD_MAX_CHARS, HARD_MAX_DURATION_US
 
 
-def configure_rule_dependencies(dependencies: dict[str, Any]) -> None:
-    globals().update(dependencies)
-
-
+MAX_FINAL_VISIBLE_REPAIR_PASSES = 128
 MAX_CAPTION_ONLY_TARGET_GAP_US = 120_000
 
 MAX_SAME_SUBTITLE_SHORT_TAIL_CHARS = 2
@@ -15,6 +46,37 @@ MAX_SAME_SUBTITLE_SHORT_TAIL_SOURCE_GAP_US = 800_000
 
 SUBJECT_PREFIX_COMPLETED_PREDICATE_REPAIR_REASON = "subject_prefix_completed_predicate_restart"
 SUBJECT_PREFIX_COMPLETED_PREDICATE_STARTS = ("全是", "都是", "全都是", "全部是", "尽是", "就是")
+
+
+@dataclass(frozen=True)
+class CaptionOnlyFinalizerRule:
+    name: str
+    finalize_captions: Callable[..., tuple[list[CaptionRenderUnit], list[dict[str, Any]]]]
+    include_final_timeline: bool = False
+
+    def try_repair(
+        self,
+        *,
+        context: FinalVisibleRepairContext,
+        state: FinalVisibleRepairState,
+        pass_index: int,
+    ) -> FinalVisibleRepairRuleOutcome:
+        kwargs: dict[str, Any] = {
+            "captions": state.captions,
+            "source_graph": context.source_graph,
+            "pass_index_start": pass_index,
+        }
+        if self.include_final_timeline:
+            kwargs["final_timeline"] = state.final_timeline
+        repaired_captions, actions = self.finalize_captions(**kwargs)
+        if not actions:
+            return FinalVisibleRepairRuleOutcome()
+        return FinalVisibleRepairRuleOutcome(
+            final_timeline=state.final_timeline,
+            captions=repaired_captions,
+            actions=actions,
+            timeline_changed=False,
+        )
 
 
 def _finalize_caption_only_dangling_merges(

@@ -22,6 +22,9 @@ def assert_run_summary_contract(
         "ready_for_user_manual_qc",
         "writer_fallback_count",
         "blocker_codes",
+        "final_timeline_quality_guard_gate_passed",
+        "final_timeline_quality_guard_blocking_candidate_count",
+        "final_timeline_repair_intent_count",
     }
     case.assertTrue(required <= set(summary), sorted(required - set(summary)))
     if summary["commit_performed"]:

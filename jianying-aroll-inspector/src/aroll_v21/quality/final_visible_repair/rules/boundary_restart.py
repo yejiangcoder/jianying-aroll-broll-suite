@@ -502,11 +502,13 @@ def _following_unselected_words(
     previous_kept_end_us = last_end_us
     for word in rows:
         word_id = str(getattr(word, "word_id", "") or "")
-        if not word_id or word_id in used_word_ids:
+        if not word_id:
             continue
         word_start_us = int(getattr(word, "source_start_us", 0) or 0)
         if word_start_us < last_end_us:
             continue
+        if word_id in used_word_ids:
+            break
         if word_start_us - previous_kept_end_us > MAX_SOURCE_TAIL_RESTART_GAP_US:
             break
         if source_material_id and str(getattr(word, "source_material_id", "") or "") not in {"", source_material_id}:

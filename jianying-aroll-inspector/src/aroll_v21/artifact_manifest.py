@@ -47,6 +47,7 @@ REQUIRED_ARTIFACTS = (
     "material_write_plan.json",
     "validator_report.json",
     "postwrite_report.json",
+    "final_timeline_quality_guard_report.json",
     "quality_gate_report.json",
     "blocker_report.json",
     "decision_trace.json",
@@ -233,6 +234,7 @@ def _write_artifact_manifest(
         "semantic_decision_cache.json",
         "semantic_adjudication_report.json",
         "quality_gate_report.json",
+        "final_timeline_quality_guard_report.json",
         "prewrite_report.json",
         "writeback_report.json",
     ]

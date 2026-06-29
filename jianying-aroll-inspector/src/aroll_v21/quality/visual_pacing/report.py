@@ -105,7 +105,11 @@ def build_visual_pacing_report(
             safe_merge_candidate_count=len(safe_merge_candidates),
         )
     )
-    cut_density_report = _cut_density_report_from_merge_report(merge_report, final_timeline)
+    cut_density_report = (
+        _cut_density_report(final_timeline)
+        if timeline_changed_after_visual_pacing
+        else _cut_density_report_from_merge_report(merge_report, final_timeline)
+    )
     large_intra_segment_gap_report = dict(
         merge_report.get("large_intra_segment_gap_report")
         or {

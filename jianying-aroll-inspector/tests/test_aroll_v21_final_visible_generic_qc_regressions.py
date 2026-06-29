@@ -462,6 +462,42 @@ class FinalVisibleGenericQcRegressionTests(unittest.TestCase):
         self.assertIn("trim_dangling_suffix_tail", [row["decision"] for row in result.report["final_visible_repair_actions"]])
         self.assertTrue(result.report["final_visible_repair_success"], result.report)
 
+    def test_open_object_tail_in_same_segment_is_caption_only_merged(self) -> None:
+        rows = [
+            ("w001", "老子站在这就是要教你怎么把", 0, 2_033_334, 1),
+            ("w002", "输掉的尊严", 2_033_334, 2_673_334, 1),
+        ]
+        graph = _graph(rows)
+        timeline = [
+            _segment(
+                "v21_seg_000001",
+                ["w001", "w002"],
+                "老子站在这就是要教你怎么把输掉的尊严",
+                0,
+                2_673_334,
+            )
+        ]
+        captions = [
+            _caption("v21_cap_000001", "v21_seg_000001", ["w001"], "老子站在这就是要教你怎么把", 0, 2_033_334),
+            _caption("v21_cap_000002", "v21_seg_000001", ["w002"], "输掉的尊严", 2_033_334, 2_673_334),
+        ]
+        renderer = SubtitleRenderer()
+
+        result = repair_final_visible_caption_issues(
+            final_timeline=timeline,
+            captions=captions,
+            source_graph=graph,
+            render_captions=lambda current: renderer.render(current, graph),
+        )
+
+        self.assertEqual([segment.text for segment in result.final_timeline], ["老子站在这就是要教你怎么把输掉的尊严"])
+        self.assertEqual([caption.text for caption in result.captions], ["老子站在这就是要教你怎么把输掉的尊严"])
+        self.assertIn(
+            "caption_only_merge_open_tail_with_next",
+            [row["decision"] for row in result.report["final_visible_repair_actions"]],
+        )
+        self.assertTrue(result.report["final_visible_repair_success"], result.report)
+
     def test_compound_suffix_split_by_subtitle_boundary_is_merged(self) -> None:
         rows = [
             ("w001", "你", 0, 150_000, 1),

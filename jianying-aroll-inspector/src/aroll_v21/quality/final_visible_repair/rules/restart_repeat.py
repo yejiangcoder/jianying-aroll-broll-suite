@@ -1,10 +1,84 @@
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
+
+from aroll_text_normalize import normalize_text
+from aroll_v21.ir.models import CanonicalSourceGraph, CaptionRenderUnit, FinalTimelineSegment
+from aroll_v21.quality.final_caption_visible_repeat import _dangling_pronoun_modal_suffix
+from aroll_v21.quality.final_visible_repair.context import FinalVisibleRepairContext
+from aroll_v21.quality.final_visible_repair.pipeline import FinalVisibleRepairState
+from aroll_v21.quality.final_visible_repair.report import _action, _is_suffix
+from aroll_v21.quality.final_visible_repair.result import _RepairStep
+from aroll_v21.quality.final_visible_repair.rules.word_span_edit import (
+    _contiguous_word_ids_for_text,
+    _drop_contiguous_word_ids_from_timeline,
+    _leading_word_ids_for_text,
+    _segments_with_word_ids_preserving_effective_speed,
+    _trailing_word_ids_for_text,
+    _trim_word_ids_from_timeline,
+)
+from aroll_v21.quality.final_visible_repair.text_boundary import (
+    join_visible_boundary_text as _join_visible_boundary_text,
+    normalized_prefix_before_suffix as _normalized_prefix_before_suffix,
+    right_boundary_text_options_after_non_de_left as _right_boundary_text_options_after_non_de_left,
+    text_before_suffix as _text_before_suffix,
+)
+from aroll_v21.quality.final_visible_repair.timeline_utils import (
+    caption_by_id as _caption_by_id,
+    caption_index as _caption_index,
+    caption_segment_ids as _caption_segment_ids,
+    ordered_captions as _ordered_captions,
+    text_from_word_ids as _text_from_word_ids,
+)
 
 
-def configure_rule_dependencies(dependencies: dict[str, Any]) -> None:
-    globals().update(dependencies)
+@dataclass(frozen=True)
+class GateCandidateRepairRule:
+    name: str
+    repair_next_issue: Callable[..., _RepairStep | None]
+    gate: dict[str, Any]
+    candidate_captions: list[CaptionRenderUnit]
+    issue_types: set[str] | None = None
+
+    def try_repair(
+        self,
+        *,
+        context: FinalVisibleRepairContext,
+        state: FinalVisibleRepairState,
+        pass_index: int,
+    ) -> _RepairStep | None:
+        return self.repair_next_issue(
+            final_timeline=state.final_timeline,
+            captions=self.candidate_captions,
+            source_graph=context.source_graph,
+            gate=self.gate,
+            pass_index=pass_index,
+            issue_types=self.issue_types,
+        )
+
+
+def _candidate_window_captions(
+    captions: list[CaptionRenderUnit],
+    candidate: dict[str, Any],
+) -> list[CaptionRenderUnit]:
+    ordered = _ordered_captions(captions)
+    ids = [str(value) for value in list(candidate.get("window_caption_ids") or []) if str(value)]
+    if ids:
+        by_id = {caption.caption_id: caption for caption in ordered}
+        rows = [by_id[caption_id] for caption_id in ids if caption_id in by_id]
+        if len(rows) == len(ids):
+            return rows
+    caption_id = str(candidate.get("caption_id") or "")
+    related_caption_id = str(candidate.get("related_caption_id") or caption_id)
+    start = _caption_index(ordered, caption_id)
+    end = _caption_index(ordered, related_caption_id)
+    if start is None or end is None:
+        empty: list[CaptionRenderUnit] = []
+        return empty
+    if end < start:
+        start, end = end, start
+    return ordered[start : end + 1]
 
 
 def _repair_same_segment_de_duplicate_prefix(

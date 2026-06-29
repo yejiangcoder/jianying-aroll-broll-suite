@@ -1,10 +1,22 @@
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
-
-def configure_rule_dependencies(dependencies: dict[str, Any]) -> None:
-    globals().update(dependencies)
+from aroll_text_normalize import normalize_text
+from aroll_v21.ir.models import CanonicalSourceGraph, FinalTimelineSegment
+from aroll_v21.quality.final_visible_repair.context import FinalVisibleRepairContext
+from aroll_v21.quality.final_visible_repair.pipeline import FinalVisibleRepairState
+from aroll_v21.quality.final_visible_repair.report import _action
+from aroll_v21.quality.final_visible_repair.result import _RepairStep
+from aroll_v21.quality.final_visible_repair.rules.word_span_edit import (
+    _drop_contiguous_word_ids_from_timeline,
+    _trim_word_ids_from_timeline,
+)
+from aroll_v21.quality.final_visible_repair.timeline_utils import (
+    ordered_segments as _ordered_segments,
+    text_from_word_ids as _text_from_word_ids,
+)
 
 
 CONNECTOR_INTRUSION_NEXT_WORDS = ("所以", "但是", "然后", "因为", "就是", "其实")
@@ -44,6 +56,82 @@ MIN_COMPLETED_PREDICATE_RESTART_PREFIX_CHARS = 3
 
 
 MIN_COMPLETED_PREDICATE_RESTART_SHARED_CHARS = 2
+
+
+@dataclass(frozen=True)
+class ConnectorSingleWordIntrusionRule:
+    repair_connector_single_word_intrusion: Callable[..., _RepairStep | None]
+    name: str = "connector_single_word_intrusion"
+
+    def try_repair(
+        self,
+        *,
+        context: FinalVisibleRepairContext,
+        state: FinalVisibleRepairState,
+        pass_index: int,
+    ) -> _RepairStep | None:
+        return self.repair_connector_single_word_intrusion(
+            final_timeline=state.final_timeline,
+            source_graph=context.source_graph,
+            pass_index=pass_index,
+        )
+
+
+@dataclass(frozen=True)
+class ConnectorFillerRestartRule:
+    repair_connector_filler_restart: Callable[..., _RepairStep | None]
+    name: str = "connector_filler_restart"
+
+    def try_repair(
+        self,
+        *,
+        context: FinalVisibleRepairContext,
+        state: FinalVisibleRepairState,
+        pass_index: int,
+    ) -> _RepairStep | None:
+        return self.repair_connector_filler_restart(
+            final_timeline=state.final_timeline,
+            source_graph=context.source_graph,
+            pass_index=pass_index,
+        )
+
+
+@dataclass(frozen=True)
+class RepeatedObjectHeadTailRule:
+    repair_repeated_object_head_tail: Callable[..., _RepairStep | None]
+    name: str = "leading_object_head_repeated_as_tail"
+
+    def try_repair(
+        self,
+        *,
+        context: FinalVisibleRepairContext,
+        state: FinalVisibleRepairState,
+        pass_index: int,
+    ) -> _RepairStep | None:
+        return self.repair_repeated_object_head_tail(
+            final_timeline=state.final_timeline,
+            source_graph=context.source_graph,
+            pass_index=pass_index,
+        )
+
+
+@dataclass(frozen=True)
+class SubjectPrefixCompletedPredicateRestartRule:
+    repair_subject_prefix_completed_predicate_restart: Callable[..., _RepairStep | None]
+    name: str = "subject_prefix_completed_predicate_restart"
+
+    def try_repair(
+        self,
+        *,
+        context: FinalVisibleRepairContext,
+        state: FinalVisibleRepairState,
+        pass_index: int,
+    ) -> _RepairStep | None:
+        return self.repair_subject_prefix_completed_predicate_restart(
+            final_timeline=state.final_timeline,
+            source_graph=context.source_graph,
+            pass_index=pass_index,
+        )
 
 
 def _repair_connector_single_word_intrusion(

@@ -39,6 +39,8 @@ from aroll_v21.ir.models import Blocker, BlockerReport, RunReport
 from aroll_v21.quality import VisualPacingNormalizer
 from aroll_v21.quality.final_caption_visible_repeat import build_final_caption_visible_repeat_gate
 from aroll_v21.quality.final_visible_caption_repair import repair_final_visible_caption_issues
+from aroll_v21.quality.final_timeline_repair_apply import recompute_final_timeline_safe_handles
+from aroll_v21.quality.quality_audit import build_quality_snapshot, build_timeline_mutation
 from aroll_v21.quality.quality_gate import build_quality_gate_report
 from aroll_v21.quality.repeat_span_repair import self_repair_aborted_phrase_candidate
 from aroll_v21.render import SubtitleRenderer
@@ -188,19 +190,72 @@ class ArollEngine:
             )
 
         final_timeline = self._drop_deterministic_self_repair_aborted_segments(final_timeline, decision_plan)
+        quality_mutations: list[dict[str, Any]] = []
+        initial_visual_before_timeline = list(final_timeline)
+        initial_visual_before_captions = self.renderer.render(final_timeline, source_graph)
         final_timeline, visual_pacing_report = self.visual_pacing.normalize(final_timeline, source_graph)
         captions = self.renderer.render(final_timeline, source_graph)
+        self._record_quality_mutation(
+            quality_mutations,
+            phase="visual_pacing.initial",
+            rule_name="visual_pacing.normalize",
+            before_timeline=initial_visual_before_timeline,
+            before_captions=initial_visual_before_captions,
+            after_timeline=final_timeline,
+            after_captions=captions,
+            source_graph=source_graph,
+            action={"visual_pacing_executed": True},
+            after_visual_pacing_report=visual_pacing_report,
+            enforce_regression_guard=False,
+        )
         before_final_target_cleanup_signature = self._final_timeline_state_signature(final_timeline)
+        before_final_target_cleanup_timeline = list(final_timeline)
+        before_final_target_cleanup_captions = list(captions)
         final_timeline = self._drop_final_target_aborted_caption_restarts(final_timeline, captions, source_graph, decision_plan)
         if self._final_timeline_state_signature(final_timeline) != before_final_target_cleanup_signature:
+            captions_after_final_target_cleanup = self.renderer.render(final_timeline, source_graph)
+            self._record_quality_mutation(
+                quality_mutations,
+                phase="final_target_cleanup.pre_repair",
+                rule_name="_drop_final_target_aborted_caption_restarts",
+                before_timeline=before_final_target_cleanup_timeline,
+                before_captions=before_final_target_cleanup_captions,
+                after_timeline=final_timeline,
+                after_captions=captions_after_final_target_cleanup,
+                source_graph=source_graph,
+                action={"cleanup": "drop_final_target_aborted_caption_restarts"},
+                enforce_regression_guard=False,
+            )
+            before_cleanup_visual_timeline = list(final_timeline)
+            before_cleanup_visual_captions = list(captions_after_final_target_cleanup)
             final_timeline, visual_pacing_report = self.visual_pacing.normalize(final_timeline, source_graph)
             captions = self.renderer.render(final_timeline, source_graph)
+            self._record_quality_mutation(
+                quality_mutations,
+                phase="visual_pacing.after_final_target_cleanup",
+                rule_name="visual_pacing.normalize",
+                before_timeline=before_cleanup_visual_timeline,
+                before_captions=before_cleanup_visual_captions,
+                after_timeline=final_timeline,
+                after_captions=captions,
+                source_graph=source_graph,
+                action={"visual_pacing_executed": True},
+                after_visual_pacing_report=visual_pacing_report,
+                enforce_regression_guard=False,
+            )
         final_visible_repair_reports: list[dict[str, Any]] = []
         visual_pacing_rerun_after_final_repair_count = 0
         final_visible_repair_max_cycle_exhausted = False
+        final_visible_repair_cycle_stop_reason = ""
+        seen_final_visible_cycle_signatures: set[tuple[Any, ...]] = {
+            self._final_visible_state_signature(final_timeline, captions)
+        }
         max_final_visible_repair_cycles = 8
         for cycle_index in range(max_final_visible_repair_cycles):
             state_before_repair = self._final_visible_state_signature(final_timeline, captions)
+            seen_final_visible_cycle_signatures.add(state_before_repair)
+            timeline_before_repair = list(final_timeline)
+            captions_before_repair = list(captions)
             final_visible_repair = repair_final_visible_caption_issues(
                 final_timeline=final_timeline,
                 captions=captions,
@@ -211,54 +266,313 @@ class ArollEngine:
             final_timeline = final_visible_repair.final_timeline
             captions = final_visible_repair.captions
             state_after_repair = self._final_visible_state_signature(final_timeline, captions)
-            if int(final_visible_repair.report.get("final_visible_repair_action_count") or 0) <= 0:
+            repair_action_count = int(final_visible_repair.report.get("final_visible_repair_action_count") or 0)
+            repair_mutation = self._record_quality_mutation(
+                quality_mutations,
+                phase="final_visible_repair.cycle",
+                rule_name="repair_final_visible_caption_issues",
+                before_timeline=timeline_before_repair,
+                before_captions=captions_before_repair,
+                after_timeline=final_timeline,
+                after_captions=captions,
+                source_graph=source_graph,
+                action={
+                    "cycle_index": cycle_index + 1,
+                    "action_count": repair_action_count,
+                    "stop_reason": str(final_visible_repair.report.get("final_visible_repair_stop_reason") or ""),
+                },
+            )
+            self._accept_pending_visual_pacing_recheck(repair_mutation)
+            if repair_mutation is not None and not bool(repair_mutation.get("accepted")):
+                final_visible_repair_max_cycle_exhausted = True
+                final_visible_repair_cycle_stop_reason = "quality_mutation_regression_detected"
                 break
-            if state_after_repair == state_before_repair:
+            if repair_action_count <= 0:
                 break
+            if state_after_repair in seen_final_visible_cycle_signatures:
+                final_visible_repair_max_cycle_exhausted = True
+                final_visible_repair_cycle_stop_reason = "repair_cycle_state_repeated"
+                break
+            seen_final_visible_cycle_signatures.add(state_after_repair)
             if cycle_index + 1 >= max_final_visible_repair_cycles:
                 final_visible_repair_max_cycle_exhausted = True
+                final_visible_repair_cycle_stop_reason = "max_repair_cycles_exhausted"
                 break
             timeline_before_pacing_signature = self._final_timeline_state_signature(final_timeline)
+            timeline_before_pacing = list(final_timeline)
             captions_before_pacing = list(captions)
+            visual_pacing_report_before = dict(visual_pacing_report or {})
             final_timeline, visual_pacing_report = self.visual_pacing.normalize(final_timeline, source_graph)
             if self._final_timeline_state_signature(final_timeline) == timeline_before_pacing_signature:
                 captions = captions_before_pacing
             else:
                 captions = self.renderer.render(final_timeline, source_graph)
             visual_pacing_rerun_after_final_repair_count += 1
+            pacing_mutation = self._record_quality_mutation(
+                quality_mutations,
+                phase="visual_pacing.after_final_visible_repair",
+                rule_name="visual_pacing.normalize",
+                before_timeline=timeline_before_pacing,
+                before_captions=captions_before_pacing,
+                after_timeline=final_timeline,
+                after_captions=captions,
+                source_graph=source_graph,
+                action={"cycle_index": cycle_index + 1, "visual_pacing_executed": True},
+                after_visual_pacing_report=visual_pacing_report,
+            )
+            if pacing_mutation is not None and not bool(pacing_mutation.get("accepted")):
+                final_timeline = timeline_before_pacing
+                captions = captions_before_pacing
+                visual_pacing_report = visual_pacing_report_before
+                final_visible_repair_cycle_stop_reason = "visual_pacing_regression_reverted_after_final_visible_repair"
+                break
+            state_after_pacing = self._final_visible_state_signature(final_timeline, captions)
+            if state_after_pacing != state_after_repair and state_after_pacing in seen_final_visible_cycle_signatures:
+                final_visible_repair_max_cycle_exhausted = True
+                final_visible_repair_cycle_stop_reason = "visual_pacing_reintroduced_seen_repair_state"
+                break
+            seen_final_visible_cycle_signatures.add(state_after_pacing)
         final_visible_repair_report = self._combined_final_visible_repair_report(
             final_visible_repair_reports,
             visual_pacing_rerun_after_final_repair_count=visual_pacing_rerun_after_final_repair_count,
             max_cycle_exhausted=final_visible_repair_max_cycle_exhausted,
+            cycle_stop_reason=final_visible_repair_cycle_stop_reason,
+            quality_mutations=quality_mutations,
         )
-        before_post_repair_final_target_cleanup_signature = self._final_timeline_state_signature(final_timeline)
-        final_timeline = self._drop_final_target_aborted_caption_restarts(final_timeline, captions, source_graph, decision_plan)
-        if self._final_timeline_state_signature(final_timeline) != before_post_repair_final_target_cleanup_signature:
-            final_timeline, visual_pacing_report = self.visual_pacing.normalize(final_timeline, source_graph)
-            captions = self.renderer.render(final_timeline, source_graph)
-            post_cleanup_repair = repair_final_visible_caption_issues(
+        if not final_visible_repair_max_cycle_exhausted:
+            before_post_repair_final_target_cleanup_signature = self._final_timeline_state_signature(final_timeline)
+            before_post_repair_final_target_cleanup_timeline = list(final_timeline)
+            before_post_repair_final_target_cleanup_captions = list(captions)
+            final_timeline = self._drop_final_target_aborted_caption_restarts(final_timeline, captions, source_graph, decision_plan)
+            if self._final_timeline_state_signature(final_timeline) != before_post_repair_final_target_cleanup_signature:
+                captions_after_post_repair_cleanup = self.renderer.render(final_timeline, source_graph)
+                cleanup_mutation = self._record_quality_mutation(
+                    quality_mutations,
+                    phase="post_cleanup.final_target_restart",
+                    rule_name="_drop_final_target_aborted_caption_restarts",
+                    before_timeline=before_post_repair_final_target_cleanup_timeline,
+                    before_captions=before_post_repair_final_target_cleanup_captions,
+                    after_timeline=final_timeline,
+                    after_captions=captions_after_post_repair_cleanup,
+                    source_graph=source_graph,
+                    action={"cleanup": "drop_final_target_aborted_caption_restarts"},
+                )
+                if cleanup_mutation is not None and not bool(cleanup_mutation.get("accepted")):
+                    final_visible_repair_max_cycle_exhausted = True
+                    final_visible_repair_cycle_stop_reason = "quality_mutation_regression_detected"
+                before_post_cleanup_visual_timeline = list(final_timeline)
+                before_post_cleanup_visual_captions = list(captions_after_post_repair_cleanup)
+                final_timeline, visual_pacing_report = self.visual_pacing.normalize(final_timeline, source_graph)
+                captions = self.renderer.render(final_timeline, source_graph)
+                visual_cleanup_mutation = self._record_quality_mutation(
+                    quality_mutations,
+                    phase="visual_pacing.post_cleanup",
+                    rule_name="visual_pacing.normalize",
+                    before_timeline=before_post_cleanup_visual_timeline,
+                    before_captions=before_post_cleanup_visual_captions,
+                    after_timeline=final_timeline,
+                    after_captions=captions,
+                    source_graph=source_graph,
+                    action={"visual_pacing_executed": True},
+                    after_visual_pacing_report=visual_pacing_report,
+                )
+                if visual_cleanup_mutation is not None and not bool(visual_cleanup_mutation.get("accepted")):
+                    final_visible_repair_max_cycle_exhausted = True
+                    final_visible_repair_cycle_stop_reason = "quality_mutation_regression_detected"
+                post_cleanup_state = self._final_visible_state_signature(final_timeline, captions)
+                if post_cleanup_state in seen_final_visible_cycle_signatures:
+                    final_visible_repair_max_cycle_exhausted = True
+                    final_visible_repair_cycle_stop_reason = "post_cleanup_reintroduced_seen_repair_state"
+                else:
+                    seen_final_visible_cycle_signatures.add(post_cleanup_state)
+                if final_visible_repair_max_cycle_exhausted:
+                    final_visible_repair_report = self._combined_final_visible_repair_report(
+                        final_visible_repair_reports,
+                        visual_pacing_rerun_after_final_repair_count=visual_pacing_rerun_after_final_repair_count,
+                        max_cycle_exhausted=final_visible_repair_max_cycle_exhausted,
+                        cycle_stop_reason=final_visible_repair_cycle_stop_reason,
+                        quality_mutations=quality_mutations,
+                    )
+                else:
+                    timeline_before_post_cleanup_repair = list(final_timeline)
+                    captions_before_post_cleanup_repair = list(captions)
+                    post_cleanup_repair = repair_final_visible_caption_issues(
+                        final_timeline=final_timeline,
+                        captions=captions,
+                        source_graph=source_graph,
+                        render_captions=lambda timeline: self.renderer.render(timeline, source_graph),
+                    )
+                    final_visible_repair_reports.append(post_cleanup_repair.report)
+                    final_timeline = post_cleanup_repair.final_timeline
+                    captions = post_cleanup_repair.captions
+                    post_cleanup_repair_action_count = int(
+                        post_cleanup_repair.report.get("final_visible_repair_action_count") or 0
+                    )
+                    post_cleanup_repair_mutation = self._record_quality_mutation(
+                        quality_mutations,
+                        phase="final_visible_repair.post_cleanup",
+                        rule_name="repair_final_visible_caption_issues",
+                        before_timeline=timeline_before_post_cleanup_repair,
+                        before_captions=captions_before_post_cleanup_repair,
+                        after_timeline=final_timeline,
+                        after_captions=captions,
+                        source_graph=source_graph,
+                        action={
+                            "action_count": post_cleanup_repair_action_count,
+                            "stop_reason": str(post_cleanup_repair.report.get("final_visible_repair_stop_reason") or ""),
+                        },
+                    )
+                    self._accept_pending_visual_pacing_recheck(post_cleanup_repair_mutation)
+                    if post_cleanup_repair_mutation is not None and not bool(post_cleanup_repair_mutation.get("accepted")):
+                        final_visible_repair_max_cycle_exhausted = True
+                        final_visible_repair_cycle_stop_reason = "quality_mutation_regression_detected"
+                    post_cleanup_repair_state = self._final_visible_state_signature(final_timeline, captions)
+                    if (
+                        not final_visible_repair_max_cycle_exhausted
+                        and post_cleanup_repair_action_count > 0
+                        and post_cleanup_repair_state in seen_final_visible_cycle_signatures
+                    ):
+                        final_visible_repair_max_cycle_exhausted = True
+                        final_visible_repair_cycle_stop_reason = "post_cleanup_repair_state_repeated"
+                    else:
+                        seen_final_visible_cycle_signatures.add(post_cleanup_repair_state)
+                    if not final_visible_repair_max_cycle_exhausted and post_cleanup_repair_action_count > 0:
+                        timeline_before_pacing_signature = self._final_timeline_state_signature(final_timeline)
+                        timeline_before_post_cleanup_pacing = list(final_timeline)
+                        state_before_post_cleanup_pacing = self._final_visible_state_signature(final_timeline, captions)
+                        captions_before_pacing = list(captions)
+                        final_timeline, visual_pacing_report = self.visual_pacing.normalize(final_timeline, source_graph)
+                        if self._final_timeline_state_signature(final_timeline) == timeline_before_pacing_signature:
+                            captions = captions_before_pacing
+                        else:
+                            captions = self.renderer.render(final_timeline, source_graph)
+                        visual_pacing_rerun_after_final_repair_count += 1
+                        post_cleanup_pacing_mutation = self._record_quality_mutation(
+                            quality_mutations,
+                            phase="visual_pacing.after_post_cleanup_repair",
+                            rule_name="visual_pacing.normalize",
+                            before_timeline=timeline_before_post_cleanup_pacing,
+                            before_captions=captions_before_pacing,
+                            after_timeline=final_timeline,
+                            after_captions=captions,
+                            source_graph=source_graph,
+                            action={"visual_pacing_executed": True},
+                            after_visual_pacing_report=visual_pacing_report,
+                        )
+                        if post_cleanup_pacing_mutation is not None and not bool(post_cleanup_pacing_mutation.get("accepted")):
+                            final_visible_repair_max_cycle_exhausted = True
+                            final_visible_repair_cycle_stop_reason = "quality_mutation_regression_detected"
+                        state_after_post_cleanup_pacing = self._final_visible_state_signature(final_timeline, captions)
+                        if (
+                            state_after_post_cleanup_pacing != state_before_post_cleanup_pacing
+                            and state_after_post_cleanup_pacing in seen_final_visible_cycle_signatures
+                        ):
+                            final_visible_repair_max_cycle_exhausted = True
+                            final_visible_repair_cycle_stop_reason = "post_cleanup_visual_pacing_reintroduced_seen_repair_state"
+                        else:
+                            seen_final_visible_cycle_signatures.add(state_after_post_cleanup_pacing)
+                    final_visible_repair_report = self._combined_final_visible_repair_report(
+                        final_visible_repair_reports,
+                        visual_pacing_rerun_after_final_repair_count=visual_pacing_rerun_after_final_repair_count,
+                        max_cycle_exhausted=final_visible_repair_max_cycle_exhausted,
+                        cycle_stop_reason=final_visible_repair_cycle_stop_reason,
+                        quality_mutations=quality_mutations,
+                    )
+        final_timeline, captions, late_final_target_blockers = self._reconcile_late_final_target_repeat_semantics(
+            final_timeline,
+            captions,
+            source_graph,
+            decision_plan,
+            quality_mutations,
+        )
+        blockers.extend(late_final_target_blockers)
+        if not final_visible_repair_max_cycle_exhausted:
+            late_final_visible_repair = repair_final_visible_caption_issues(
                 final_timeline=final_timeline,
                 captions=captions,
                 source_graph=source_graph,
                 render_captions=lambda timeline: self.renderer.render(timeline, source_graph),
             )
-            final_visible_repair_reports.append(post_cleanup_repair.report)
-            final_timeline = post_cleanup_repair.final_timeline
-            captions = post_cleanup_repair.captions
-            if int(post_cleanup_repair.report.get("final_visible_repair_action_count") or 0) > 0:
-                timeline_before_pacing_signature = self._final_timeline_state_signature(final_timeline)
-                captions_before_pacing = list(captions)
-                final_timeline, visual_pacing_report = self.visual_pacing.normalize(final_timeline, source_graph)
-                if self._final_timeline_state_signature(final_timeline) == timeline_before_pacing_signature:
-                    captions = captions_before_pacing
-                else:
-                    captions = self.renderer.render(final_timeline, source_graph)
-                visual_pacing_rerun_after_final_repair_count += 1
-            final_visible_repair_report = self._combined_final_visible_repair_report(
-                final_visible_repair_reports,
-                visual_pacing_rerun_after_final_repair_count=visual_pacing_rerun_after_final_repair_count,
-                max_cycle_exhausted=final_visible_repair_max_cycle_exhausted,
+            late_repair_action_count = int(
+                late_final_visible_repair.report.get("final_visible_repair_action_count") or 0
             )
+            if late_repair_action_count > 0:
+                timeline_before_late_repair = list(final_timeline)
+                captions_before_late_repair = list(captions)
+                final_visible_repair_reports.append(late_final_visible_repair.report)
+                final_timeline = late_final_visible_repair.final_timeline
+                captions = late_final_visible_repair.captions
+                late_repair_mutation = self._record_quality_mutation(
+                    quality_mutations,
+                    phase="final_visible_repair.after_late_semantic_reconcile",
+                    rule_name="repair_final_visible_caption_issues",
+                    before_timeline=timeline_before_late_repair,
+                    before_captions=captions_before_late_repair,
+                    after_timeline=final_timeline,
+                    after_captions=captions,
+                    source_graph=source_graph,
+                    action={
+                        "action_count": late_repair_action_count,
+                        "stop_reason": str(late_final_visible_repair.report.get("final_visible_repair_stop_reason") or ""),
+                    },
+                )
+                self._accept_pending_visual_pacing_recheck(late_repair_mutation)
+                if late_repair_mutation is not None and not bool(late_repair_mutation.get("accepted")):
+                    final_visible_repair_max_cycle_exhausted = True
+                    final_visible_repair_cycle_stop_reason = "quality_mutation_regression_detected"
+                if not final_visible_repair_max_cycle_exhausted:
+                    timeline_before_late_pacing_signature = self._final_timeline_state_signature(final_timeline)
+                    timeline_before_late_pacing = list(final_timeline)
+                    captions_before_late_pacing = list(captions)
+                    visual_pacing_report_before_late = dict(visual_pacing_report or {})
+                    final_timeline, visual_pacing_report = self.visual_pacing.normalize(final_timeline, source_graph)
+                    if self._final_timeline_state_signature(final_timeline) == timeline_before_late_pacing_signature:
+                        captions = captions_before_late_pacing
+                    else:
+                        captions = self.renderer.render(final_timeline, source_graph)
+                    visual_pacing_rerun_after_final_repair_count += 1
+                    late_pacing_mutation = self._record_quality_mutation(
+                        quality_mutations,
+                        phase="visual_pacing.after_late_semantic_reconcile_repair",
+                        rule_name="visual_pacing.normalize",
+                        before_timeline=timeline_before_late_pacing,
+                        before_captions=captions_before_late_pacing,
+                        after_timeline=final_timeline,
+                        after_captions=captions,
+                        source_graph=source_graph,
+                        action={"visual_pacing_executed": True},
+                        after_visual_pacing_report=visual_pacing_report,
+                    )
+                    if late_pacing_mutation is not None and not bool(late_pacing_mutation.get("accepted")):
+                        final_timeline = timeline_before_late_pacing
+                        captions = captions_before_late_pacing
+                        visual_pacing_report = visual_pacing_report_before_late
+                        final_visible_repair_cycle_stop_reason = (
+                            "visual_pacing_regression_reverted_after_late_semantic_reconcile_repair"
+                        )
+                final_visible_repair_report = self._combined_final_visible_repair_report(
+                    final_visible_repair_reports,
+                    visual_pacing_rerun_after_final_repair_count=visual_pacing_rerun_after_final_repair_count,
+                    max_cycle_exhausted=final_visible_repair_max_cycle_exhausted,
+                    cycle_stop_reason=final_visible_repair_cycle_stop_reason,
+                    quality_mutations=quality_mutations,
+                )
+        final_visible_repair_report.update(self._quality_mutation_report_fields(quality_mutations))
+        final_safe_handle_result = recompute_final_timeline_safe_handles(
+            final_timeline=final_timeline,
+            captions=captions,
+            source_graph=source_graph,
+            render_captions=lambda timeline: self.renderer.render(timeline, source_graph),
+            pass_index=int(final_visible_repair_report.get("final_timeline_repair_intent_action_count") or 0) + 1,
+        )
+        if final_safe_handle_result is not None:
+            final_timeline = final_safe_handle_result.final_timeline
+            captions = final_safe_handle_result.captions
+            engine_safe_actions = list(final_visible_repair_report.get("engine_final_timeline_repair_actions") or [])
+            engine_safe_actions.append(final_safe_handle_result.action)
+            final_visible_repair_report["engine_final_timeline_repair_actions"] = engine_safe_actions
+            final_visible_repair_report["engine_final_timeline_repair_action_count"] = len(engine_safe_actions)
+            final_visible_repair_report["engine_final_safe_handle_recompute_applied"] = True
         self._sync_semantic_gate_with_final_output(decision_plan, final_timeline, captions)
         self._refresh_semantic_adjudication_report(decision_plan)
         blockers.extend(decision_plan.blockers)
@@ -377,13 +691,116 @@ class ArollEngine:
             decision_trace=decision_plan.decision_trace,
         )
 
+    def _record_quality_mutation(
+        self,
+        quality_mutations: list[dict[str, Any]],
+        *,
+        phase: str,
+        rule_name: str,
+        before_timeline,
+        before_captions,
+        after_timeline,
+        after_captions,
+        source_graph,
+        action: dict[str, Any] | None = None,
+        before_visual_pacing_report: dict[str, Any] | None = None,
+        after_visual_pacing_report: dict[str, Any] | None = None,
+        enforce_regression_guard: bool = True,
+    ) -> dict[str, Any] | None:
+        if self._final_visible_state_signature(before_timeline, before_captions) == self._final_visible_state_signature(
+            after_timeline,
+            after_captions,
+        ):
+            no_mutation: dict[str, Any] | None = None
+            return no_mutation
+        before = build_quality_snapshot(
+            final_timeline=list(before_timeline),
+            captions=list(before_captions),
+            source_graph=source_graph,
+            visual_pacing_report=before_visual_pacing_report,
+        )
+        after = build_quality_snapshot(
+            final_timeline=list(after_timeline),
+            captions=list(after_captions),
+            source_graph=source_graph,
+            visual_pacing_report=after_visual_pacing_report,
+        )
+        mutation = build_timeline_mutation(
+            phase=phase,
+            rule_name=rule_name,
+            before=before,
+            after=after,
+            action=action,
+        ).to_report()
+        if not enforce_regression_guard and not bool(mutation.get("accepted")):
+            mutation["accepted"] = True
+            mutation["audit_only"] = True
+            mutation["audit_only_rejection_reason"] = str(mutation.get("rejection_reason") or "")
+            mutation["rejection_reason"] = ""
+        quality_mutations.append(mutation)
+        return mutation
+
+    def _accept_pending_visual_pacing_recheck(self, mutation: dict[str, Any] | None) -> None:
+        if mutation is None or bool(mutation.get("accepted")):
+            return
+        if str(mutation.get("rejection_reason") or "") not in {
+            "blocking_short_segment_count_increased",
+            "visual_blocker_introduced",
+        }:
+            return
+        before = mutation.get("before") if isinstance(mutation.get("before"), dict) else {}
+        after = mutation.get("after") if isinstance(mutation.get("after"), dict) else {}
+        if int(after.get("final_visible_fatal_count") or 0) > int(before.get("final_visible_fatal_count") or 0):
+            return
+        before_alignment = set(before.get("caption_alignment_blocker_codes") or [])
+        after_alignment = set(after.get("caption_alignment_blocker_codes") or [])
+        introduced_alignment = after_alignment - before_alignment
+        after_visual = set(after.get("visual_blocker_codes") or [])
+        pending_short_caption_alignment = introduced_alignment <= {"V21_CAPTION_TOO_SHORT"} and (
+            "V21_VISUAL_PACING_SHORT_SEGMENTS_REMAIN" in after_visual
+            or int(after.get("blocking_short_segment_count") or 0) > int(before.get("blocking_short_segment_count") or 0)
+        )
+        if introduced_alignment and not pending_short_caption_alignment:
+            return
+        mutation["accepted"] = True
+        mutation["audit_only"] = True
+        mutation["pending_visual_pacing_recheck"] = True
+        mutation["audit_only_rejection_reason"] = str(mutation.get("rejection_reason") or "")
+        mutation["rejection_reason"] = ""
+
+    def _accept_pending_final_visible_repair(self, mutation: dict[str, Any] | None) -> None:
+        if mutation is None or bool(mutation.get("accepted")):
+            return
+        if str(mutation.get("rejection_reason") or "") != "final_visible_fatal_count_increased":
+            return
+        before = mutation.get("before") if isinstance(mutation.get("before"), dict) else {}
+        after = mutation.get("after") if isinstance(mutation.get("after"), dict) else {}
+        before_visual = set(before.get("visual_blocker_codes") or [])
+        after_visual = set(after.get("visual_blocker_codes") or [])
+        if after_visual - before_visual:
+            return
+        if int(after.get("blocking_short_segment_count") or 0) > int(before.get("blocking_short_segment_count") or 0):
+            return
+        before_alignment = set(before.get("caption_alignment_blocker_codes") or [])
+        after_alignment = set(after.get("caption_alignment_blocker_codes") or [])
+        if after_alignment - before_alignment:
+            return
+        mutation["accepted"] = True
+        mutation["audit_only"] = True
+        mutation["pending_final_visible_repair"] = True
+        mutation["audit_only_rejection_reason"] = str(mutation.get("rejection_reason") or "")
+        mutation["rejection_reason"] = ""
+
     def _combined_final_visible_repair_report(
         self,
         reports: list[dict[str, Any]],
         *,
         visual_pacing_rerun_after_final_repair_count: int,
         max_cycle_exhausted: bool,
+        cycle_stop_reason: str = "",
+        quality_mutations: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        quality_mutations = list(quality_mutations or [])
         if not reports:
             return {
                 "final_visible_repair_enabled": True,
@@ -396,6 +813,8 @@ class ArollEngine:
                 ),
                 "final_visible_repair_cycle_count": 0,
                 "final_visible_repair_max_cycle_exhausted": bool(max_cycle_exhausted),
+                "final_visible_repair_stop_reason": str(cycle_stop_reason or ""),
+                **self._quality_mutation_report_fields(quality_mutations),
             }
         combined = dict(reports[-1])
         all_actions: list[dict[str, Any]] = []
@@ -424,15 +843,130 @@ class ArollEngine:
             for report in reports
         )
         if max_cycle_exhausted:
-            combined["final_visible_repair_stop_reason"] = "max_repair_cycles_exhausted"
+            stop_reason = str(cycle_stop_reason or "max_repair_cycles_exhausted")
+            combined["final_visible_repair_stop_reason"] = stop_reason
             all_unresolved.append(
                 {
-                    "reason": "max_repair_cycles_exhausted",
+                    "reason": stop_reason,
                     "cycle_count": len(reports),
                     "visual_pacing_rerun_count": int(visual_pacing_rerun_after_final_repair_count),
                 }
             )
+        elif cycle_stop_reason:
+            combined["final_visible_repair_stop_reason"] = str(cycle_stop_reason)
+        combined.update(self._quality_mutation_report_fields(quality_mutations))
         return combined
+
+    def _reconcile_late_final_target_repeat_semantics(
+        self,
+        final_timeline,
+        captions,
+        source_graph,
+        decision_plan,
+        quality_mutations: list[dict[str, Any]],
+    ):
+        blockers: list[Blocker] = []
+        max_passes = 3
+        for pass_index in range(max_passes):
+            before_signature = self._final_timeline_state_signature(final_timeline)
+            before_payload_ids = {
+                str(payload.get("cluster_id") or payload.get("issue_id") or "")
+                for payload in decision_plan.semantic_request_payloads
+                if isinstance(payload, dict)
+            }
+            timeline_before = list(final_timeline)
+            captions_before = list(captions)
+            resolver = FinalTargetRepeatResolver()
+            final_timeline, resolver_blockers = resolver.resolve(final_timeline, decision_plan)
+            blockers.extend(resolver_blockers)
+            timeline_changed = self._final_timeline_state_signature(final_timeline) != before_signature
+            if timeline_changed:
+                captions = self.renderer.render(final_timeline, source_graph)
+                mutation = self._record_quality_mutation(
+                    quality_mutations,
+                    phase="final_target_repeat.late_semantic_reconcile",
+                    rule_name="FinalTargetRepeatResolver.resolve",
+                    before_timeline=timeline_before,
+                    before_captions=captions_before,
+                    after_timeline=final_timeline,
+                    after_captions=captions,
+                    source_graph=source_graph,
+                    action={"pass_index": pass_index + 1},
+                )
+                self._accept_pending_final_visible_repair(mutation)
+                if mutation is not None and not bool(mutation.get("accepted")):
+                    final_timeline = timeline_before
+                    captions = captions_before
+                    blockers.append(
+                        Blocker(
+                            code="V21_LATE_FINAL_TARGET_RECONCILE_REGRESSION_REVERTED",
+                            message="late final-target semantic reconciliation introduced a quality regression and was reverted",
+                            layer="decision",
+                            severity="write_blocker",
+                            context={
+                                "pass_index": pass_index + 1,
+                                "rejection_reason": str(mutation.get("rejection_reason") or ""),
+                            },
+                        )
+                    )
+                    break
+
+            provider_decision_added = self._route_final_target_repeat_semantic_requests(decision_plan)
+            if provider_decision_added:
+                continue
+
+            after_payload_ids = {
+                str(payload.get("cluster_id") or payload.get("issue_id") or "")
+                for payload in decision_plan.semantic_request_payloads
+                if isinstance(payload, dict)
+            }
+            new_payload_ids = after_payload_ids - before_payload_ids
+            if not timeline_changed or new_payload_ids:
+                break
+        else:
+            blockers.append(
+                Blocker(
+                    code="V21_LATE_FINAL_TARGET_RECONCILE_MAX_PASSES_EXCEEDED",
+                    message="late final-target semantic reconciliation exceeded max passes before validation",
+                    layer="decision",
+                    severity="write_blocker",
+                    context={"max_passes": max_passes},
+                )
+            )
+        return final_timeline, captions, blockers
+
+    def _quality_mutation_report_fields(self, quality_mutations: list[dict[str, Any]]) -> dict[str, Any]:
+        rejected = [row for row in quality_mutations if not bool(row.get("accepted"))]
+        introduced_codes = sorted(
+            {
+                str(code)
+                for row in quality_mutations
+                for code in list(row.get("introduced_blocker_codes") or [])
+                if str(code)
+            }
+        )
+        cleared_codes = sorted(
+            {
+                str(code)
+                for row in quality_mutations
+                for code in list(row.get("cleared_blocker_codes") or [])
+                if str(code)
+            }
+        )
+        return {
+            "quality_mutation_count": len(quality_mutations),
+            "quality_mutations": quality_mutations,
+            "quality_mutation_rejected_count": len(rejected),
+            "quality_mutation_rejection_reasons": sorted(
+                {
+                    str(row.get("rejection_reason") or "")
+                    for row in rejected
+                    if str(row.get("rejection_reason") or "")
+                }
+            ),
+            "quality_mutation_introduced_blocker_codes": introduced_codes,
+            "quality_mutation_cleared_blocker_codes": cleared_codes,
+        }
 
     def _final_visible_state_signature(self, final_timeline, captions) -> tuple[Any, ...]:
         segment_signature = self._final_timeline_state_signature(final_timeline)
@@ -458,6 +992,12 @@ class ArollEngine:
                 int(segment.source_end_us),
                 int(segment.target_start_us),
                 int(segment.target_end_us),
+                segment.spoken_source_start_us,
+                segment.spoken_source_end_us,
+                segment.clip_source_start_us,
+                segment.clip_source_end_us,
+                int(segment.lead_handle_us or 0),
+                int(segment.tail_handle_us or 0),
             )
             for segment in list(final_timeline or [])
         )
@@ -869,12 +1409,31 @@ class ArollEngine:
             for row in decision_plan.semantic_decision_rows
             if isinstance(row, dict) and str(row.get("cluster_id") or row.get("issue_id") or "")
         }
+        attempted_provider_ids = {
+            str(
+                row.get("issue_id")
+                or row.get("cluster_id")
+                or ((row.get("request") or {}).get("issue_id") if isinstance(row.get("request"), dict) else "")
+                or ((row.get("request") or {}).get("cluster_id") if isinstance(row.get("request"), dict) else "")
+                or ""
+            )
+            for row in (decision_plan.semantic_adjudication_report or {}).get("results") or []
+            if isinstance(row, dict)
+            and bool(row.get("provider_called"))
+            and str(
+                row.get("issue_id")
+                or row.get("cluster_id")
+                or ((row.get("request") or {}).get("issue_id") if isinstance(row.get("request"), dict) else "")
+                or ((row.get("request") or {}).get("cluster_id") if isinstance(row.get("request"), dict) else "")
+                or ""
+            )
+        }
         payloads: list[dict[str, Any]] = []
         for payload in decision_plan.semantic_request_payloads:
             if not isinstance(payload, dict):
                 continue
             cluster_id = str(payload.get("cluster_id") or payload.get("issue_id") or "")
-            if not cluster_id or cluster_id in resolved_ids:
+            if not cluster_id or cluster_id in resolved_ids or cluster_id in attempted_provider_ids:
                 continue
             if str(payload.get("type") or "") != "final_target_repeat":
                 continue

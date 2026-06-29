@@ -15,6 +15,9 @@ from aroll_v21.quality import (
     build_quality_gate_report,
     build_visual_pacing_report,
 )
+from aroll_v21.quality.final_caption_visible_repeat import build_final_caption_visible_repeat_gate
+from aroll_v21.quality.final_timeline_quality_guard import build_final_timeline_quality_guard_report
+from aroll_v21.validate.projected_write_view import ProjectedWriteViewError, build_projected_write_view
 from aroll_v21.validate.rough_cut_quality import build_rough_cut_quality_metrics
 
 
@@ -86,6 +89,35 @@ class ReadOnlyValidators:
         caption_rows = _caption_rows(captions)
         word_rows = _word_rows(source_graph, final_timeline)
         edl_rows = _edl_rows(final_timeline)
+        projected_final_timeline = final_timeline
+        projected_captions = captions
+        projected_material_write_plan = material_write_plan
+        prewrite_projection_report: dict[str, Any] = {"prewrite_projected_write_view_applied": False}
+        try:
+            projected_view = build_projected_write_view(
+                source_graph=source_graph,
+                decision_plan=decision_plan,
+                final_timeline=final_timeline,
+                captions=captions,
+                material_write_plan=material_write_plan,
+            )
+            projected_final_timeline = projected_view.final_timeline
+            projected_captions = projected_view.captions
+            projected_material_write_plan = projected_view.material_write_plan
+            prewrite_projection_report = dict(projected_view.report)
+        except ProjectedWriteViewError as exc:
+            prewrite_projection_report = {
+                "prewrite_projected_write_view_applied": False,
+                "prewrite_projection_error_code": exc.code,
+                "prewrite_projection_error_message": exc.message,
+                "prewrite_projection_error_context": exc.context,
+            }
+        except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+            prewrite_projection_report = {
+                "prewrite_projected_write_view_applied": False,
+                "prewrite_projection_error_code": type(exc).__name__,
+                "prewrite_projection_error_message": str(exc),
+            }
         residual_audit = {"issues": []}
         final_repeat = build_final_repeat_gate_report(residual_audit, caption_rows)
         final_repeat = self._final_repeat_semantic_status(final_repeat, decision_plan)
@@ -104,7 +136,8 @@ class ReadOnlyValidators:
         )
         coverage = self._coverage(final_timeline, captions)
         style = self._style(source_graph, material_write_plan)
-        rough_cut = self._rough_cut_quality(final_timeline, captions, material_write_plan)
+        rough_cut = self._rough_cut_quality(projected_final_timeline, projected_captions, projected_material_write_plan)
+        rough_cut.update(prewrite_projection_report)
         postwrite = self._postwrite(material_write_plan, postwrite_materials, postwrite_mode=postwrite_mode)
         semantic = self._semantic(decision_plan)
         final_repeat_convergence = build_final_repeat_convergence_report(
@@ -117,7 +150,17 @@ class ReadOnlyValidators:
             executed=bool((visual_pacing_report or {}).get("visual_pacing_executed")),
             merge_report=visual_pacing_report,
         )
-        caption_alignment = build_caption_alignment_report(final_timeline=final_timeline, captions=captions)
+        final_caption_visible_repeat = build_final_caption_visible_repeat_gate(list(captions))
+        caption_alignment = build_caption_alignment_report(
+            final_timeline=projected_final_timeline,
+            captions=projected_captions,
+        )
+        caption_alignment.update(prewrite_projection_report)
+        final_timeline_quality_guard = build_final_timeline_quality_guard_report(
+            source_graph=source_graph,
+            final_timeline=final_timeline,
+            captions=captions,
+        )
         read_only_ok = before == {
             "final_timeline": final_timeline,
             "captions": captions,
@@ -133,16 +176,20 @@ class ReadOnlyValidators:
                 rough_cut.get("rough_cut_quality_gate_passed"),
                 postwrite.get("postwrite_material_gate_ok"),
                 semantic.get("semantic_final_review_validator_passed"),
+                final_caption_visible_repeat.get("gate_passed"),
                 caption_alignment.get("gate_passed"),
+                final_timeline_quality_guard.get("gate_passed"),
                 read_only_ok,
             ]
         )
         quality_gate = build_quality_gate_report(
             effective_speed_gate={"gate_passed": True, "blocker_codes": [], "prewrite_pending": True},
             final_repeat_convergence_gate=final_repeat_convergence,
+            final_caption_visible_repeat_gate=final_caption_visible_repeat,
             semantic_adjudication_gate=semantic,
             visual_pacing_gate=visual_pacing,
             caption_alignment_gate=caption_alignment,
+            final_timeline_quality_guard_gate=final_timeline_quality_guard,
             ready_for_user_manual_qc_preconditions_passed=base_ok,
         )
         ok = bool(base_ok and quality_gate.get("gate_passed"))
@@ -155,9 +202,12 @@ class ReadOnlyValidators:
             "safe_cut_validator": safe_cut,
             "subtitle_coverage_validator": coverage,
             "visual_pacing_gate": visual_pacing,
+            "final_caption_visible_repeat_gate": final_caption_visible_repeat,
             "caption_alignment_gate": caption_alignment,
+            "final_timeline_quality_guard_report": final_timeline_quality_guard,
             "subtitle_style_validator": style,
             "rough_cut_quality_validator": rough_cut,
+            "prewrite_projected_write_view": prewrite_projection_report,
             "postwrite_material_validator": postwrite,
             "semantic_final_review_validator": semantic,
             "quality_gate_report": quality_gate,

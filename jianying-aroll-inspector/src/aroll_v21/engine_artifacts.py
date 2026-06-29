@@ -122,6 +122,7 @@ def write_run_artifacts(run_report: RunReport, output_dir: Path, *, report_profi
         "postwrite_report.json": postwrite_payload,
         "final_caption_visible_repeat_gate.json": (validator_payload or {}).get("final_caption_visible_repeat_gate") if isinstance(validator_payload, dict) else not_reached("FinalCaptionVisibleRepeatGate"),
         "final_visible_caption_repair_report.json": (validator_payload or {}).get("final_visible_caption_repair_report") if isinstance(validator_payload, dict) else not_reached("FinalVisibleCaptionRepair"),
+        "final_timeline_quality_guard_report.json": (validator_payload or {}).get("final_timeline_quality_guard_report") if isinstance(validator_payload, dict) else not_reached("FinalTimelineQualityGuard"),
         "quality_gate_report.json": (validator_payload or {}).get("quality_gate_report") if isinstance(validator_payload, dict) else not_reached("QualityGate"),
         "blocker_report.json": run_report.blocker_report,
         "decision_trace.json": run_report.decision_trace,

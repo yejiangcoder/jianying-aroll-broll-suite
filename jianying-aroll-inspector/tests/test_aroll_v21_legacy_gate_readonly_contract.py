@@ -26,6 +26,10 @@ class ArollV21LegacyGateReadonlyContractTests(unittest.TestCase):
             postwrite_mode="simulated",
         )
         self.assertTrue(validator_report["validators_read_only"])
+        self.assertIn("final_caption_visible_repeat_gate", validator_report)
+        self.assertTrue(validator_report["final_caption_visible_repeat_gate"]["gate_passed"])
+        self.assertTrue(validator_report["quality_gate_report"]["final_caption_visible_repeat_gate_present"])
+        self.assertTrue(validator_report["quality_gate_report"]["final_caption_visible_repeat_gate"]["gate_passed"])
         self.assertEqual(final_timeline, report.final_timeline)
         self.assertEqual(captions, report.captions)
         self.assertEqual(material_write_plan, report.material_write_plan)

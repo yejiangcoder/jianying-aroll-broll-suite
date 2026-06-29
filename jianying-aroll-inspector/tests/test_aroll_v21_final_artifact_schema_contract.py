@@ -36,6 +36,7 @@ class ArollV21FinalArtifactSchemaContractTests(unittest.TestCase):
             run_dir = root / "run"
             run_summary = read_json(run_dir / "run_summary.json")
             validator_report = read_json(run_dir / "validator_report.json")
+            final_timeline_quality_guard = read_json(run_dir / "final_timeline_quality_guard_report.json")
             blocker_report = read_json(run_dir / "blocker_report.json")
             writeback_report = read_json(run_dir / "writeback_report.json")
             material_write_plan = read_json(run_dir / "material_write_plan.json")
@@ -67,9 +68,23 @@ class ArollV21FinalArtifactSchemaContractTests(unittest.TestCase):
                     "subtitle_style_validator",
                     "subtitle_coverage_validator",
                     "postwrite_material_validator",
+                    "final_timeline_quality_guard_report",
                 }
                 <= set(validator_report)
             )
+            self.assertTrue(
+                {
+                    "gate_passed",
+                    "write_gate_passed",
+                    "blocking_candidate_count",
+                    "blocker_codes",
+                    "repair_intent_report",
+                }
+                <= set(final_timeline_quality_guard)
+            )
+            self.assertIn("final_timeline_quality_guard_gate", validator_report["quality_gate_report"])
+            self.assertIn("final_timeline_quality_guard_gate_passed", run_summary)
+            self.assertIn("final_timeline_repair_intent_count", run_summary)
             self.assertTrue({"blocked", "blockers", "summary"} <= set(blocker_report))
             self.assertTrue(
                 {

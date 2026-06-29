@@ -17,6 +17,7 @@ def build_run_summary(run_report: RunReport, *, commit_performed: bool = False, 
     rough_cut = validator.get("rough_cut_quality_validator") or {}
     visual_pacing = validator.get("visual_pacing_gate") or {}
     caption_alignment = validator.get("caption_alignment_gate") or {}
+    final_timeline_quality_guard = validator.get("final_timeline_quality_guard_report") or {}
     quality_gate = validator.get("quality_gate_report") or {}
     semantic_gate = validator.get("semantic_final_review_validator") or {}
     effective_speed_gate = quality_gate.get("effective_speed_gate") if isinstance(quality_gate.get("effective_speed_gate"), dict) else {}
@@ -220,6 +221,13 @@ def build_run_summary(run_report: RunReport, *, commit_performed: bool = False, 
         "rough_cut_quality_gate_passed": bool(rough_cut.get("rough_cut_quality_gate_passed")),
         "quality_gate_passed": bool(quality_gate.get("gate_passed")),
         "quality_gate_blocker_codes": list(quality_gate.get("blocker_codes") or []),
+        "final_timeline_quality_guard_gate_passed": bool(final_timeline_quality_guard.get("gate_passed")),
+        "final_timeline_quality_guard_blocking_candidate_count": int(final_timeline_quality_guard.get("blocking_candidate_count") or 0),
+        "final_timeline_quality_guard_blocker_codes": list(final_timeline_quality_guard.get("blocker_codes") or []),
+        "final_timeline_quality_guard_candidate_type_counts": dict(final_timeline_quality_guard.get("candidate_type_counts") or {}),
+        "final_timeline_quality_guard_blocking_candidate_type_counts": dict(final_timeline_quality_guard.get("blocking_candidate_type_counts") or {}),
+        "final_timeline_repair_intent_count": int(final_timeline_quality_guard.get("repair_intent_count") or 0),
+        "final_timeline_repair_intent_type_counts": dict(final_timeline_quality_guard.get("repair_intent_type_counts") or {}),
         "semantic_adjudication_gate_passed": bool(
             quality_gate.get("semantic_adjudication_gate_passed", semantic_gate.get("semantic_adjudication_gate_passed"))
         ),

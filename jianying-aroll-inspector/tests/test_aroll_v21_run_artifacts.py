@@ -36,7 +36,17 @@ class ArollV21RunArtifactTests(unittest.TestCase):
                 self.assertTrue((run_dir / artifact).exists(), artifact)
             run_summary = json.loads((run_dir / "run_summary.json").read_text("utf-8"))
             artifact_manifest = json.loads((run_dir / "artifact_manifest.json").read_text("utf-8"))
+            validator_report = json.loads((run_dir / "validator_report.json").read_text("utf-8"))
+            guard_report = json.loads((run_dir / "final_timeline_quality_guard_report.json").read_text("utf-8"))
             self.assertNotIn("aroll_true_transcript.md", artifact_manifest["artifact_files"])
+            self.assertIn("final_timeline_quality_guard_report", validator_report)
+            self.assertEqual(guard_report["report_name"], "final_timeline_quality_guard")
+            self.assertTrue(guard_report["report_only"])
+            self.assertIn("repair_intent_report", guard_report)
+            self.assertTrue(guard_report["repair_intent_report"]["source_topology_contract"]["source_words_are_authoritative"])
+            self.assertIn("gate_passed", guard_report)
+            self.assertIn("blocking_candidate_count", guard_report)
+            self.assertIn("final_timeline_quality_guard_gate", validator_report["quality_gate_report"])
             for key in (
                 "single_source_graph_ok",
                 "all_final_segments_have_word_ids",
@@ -52,6 +62,9 @@ class ArollV21RunArtifactTests(unittest.TestCase):
                 "template_fingerprint_mismatch_count",
                 "content_schema_error_count",
                 "caption_coverage_gap_count",
+                "final_timeline_quality_guard_gate_passed",
+                "final_timeline_quality_guard_blocking_candidate_count",
+                "final_timeline_repair_intent_count",
                 "prewrite_style_gate_ok",
                 "postwrite_style_gate_ok",
                 "postwrite_decrypt_ok",

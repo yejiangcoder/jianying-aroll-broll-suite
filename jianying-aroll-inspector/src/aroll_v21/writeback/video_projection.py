@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 GAPLESS_PROJECTION_EDGE_HANDLE_US = 80_000
+GAPLESS_PROJECTION_MIN_SINGLE_CAPTION_VIDEO_US = 300_000
 
 
 def configure_writeback_dependencies(dependencies: dict[str, Any]) -> None:
@@ -331,8 +332,19 @@ def _gapless_projection_group_handles(
     clip_upper = int(group.get("handle_source_window_end_us", spoken_end))
     clip_lower = min(spoken_start, max(clip_lower, int(final_segment.clip_source_start_us) if final_segment.clip_source_start_us is not None else int(final_segment.source_start_us)))
     clip_upper = max(spoken_end, min(clip_upper, int(final_segment.clip_source_end_us) if final_segment.clip_source_end_us is not None else int(final_segment.source_end_us)))
-    lead = min(GAPLESS_PROJECTION_EDGE_HANDLE_US, max(0, spoken_start - clip_lower))
-    tail = min(GAPLESS_PROJECTION_EDGE_HANDLE_US, max(0, clip_upper - spoken_end))
+    lead_available = max(0, spoken_start - clip_lower)
+    tail_available = max(0, clip_upper - spoken_end)
+    lead = min(GAPLESS_PROJECTION_EDGE_HANDLE_US, lead_available)
+    tail = min(GAPLESS_PROJECTION_EDGE_HANDLE_US, tail_available)
+    if len(group.get("caption_ids") or []) == 1:
+        needed = max(0, GAPLESS_PROJECTION_MIN_SINGLE_CAPTION_VIDEO_US - (spoken_end - spoken_start))
+        deficit = max(0, needed - lead - tail)
+        if deficit:
+            tail_extra = min(deficit, max(0, tail_available - tail))
+            tail += tail_extra
+            deficit -= tail_extra
+        if deficit:
+            lead += min(deficit, max(0, lead_available - lead))
     return lead, tail, spoken_start - lead, spoken_end + tail
 
 
@@ -388,7 +400,16 @@ def _apply_caption_ranges_for_projected_segment(
     for caption in captions:
         caption_id = str(caption.caption_id)
         caption_groups = groups_by_caption.get(caption_id) or []
-        if source_projected and caption_groups:
+        if (
+            not source_projected
+            and len(captions) == 1
+            and len(projected_groups) == 1
+            and caption_groups
+        ):
+            group = projected_groups[0]
+            start = int(group["video_target_start_us"])
+            end = int(group["video_target_end_us"])
+        elif source_projected and caption_groups:
             projected_word_ranges = [
                 projected_range
                 for group in caption_groups

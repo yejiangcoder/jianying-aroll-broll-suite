@@ -1,9 +1,24 @@
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
-def configure_rule_dependencies(dependencies: dict[str, Any]) -> None:
-    globals().update(dependencies)
+from aroll_text_normalize import normalize_text
+from aroll_v21.ir.models import CanonicalSourceGraph, CaptionRenderUnit, FinalTimelineSegment
+from aroll_v21.quality.final_caption_visible_repeat import build_final_caption_visible_repeat_gate
+from aroll_v21.quality.final_visible_repair.context import FinalVisibleRepairContext
+from aroll_v21.quality.final_visible_repair.pipeline import FinalVisibleRepairState
+from aroll_v21.quality.final_visible_repair.report import _action
+from aroll_v21.quality.final_visible_repair.result import _RepairStep
+from aroll_v21.quality.final_visible_repair.rules.word_span_edit import _drop_or_trim_caption_words
+from aroll_v21.quality.final_visible_repair.timeline_utils import (
+    caption_by_id as _caption_by_id,
+    ordered_captions as _ordered_captions,
+)
+from aroll_v21.quality.pre_visible_semantic_junk_candidate_detector import (
+    MIN_HIGH_CONFIDENCE as PRE_VISIBLE_SEMANTIC_JUNK_MIN_HIGH_CONFIDENCE,
+    build_pre_visible_semantic_junk_candidate_report,
+)
 
 
 MAX_ISOLATED_SHORT_FRAGMENT_CHARS = 4
@@ -35,6 +50,77 @@ COMMAND_OR_DIRECTIVE_MARKERS = (
 COMMAND_COMPLETION_TAILS = ("了", "掉", "完", "走", "开", "下去", "起来")
 REACTION_TAIL_MARKERS = ("哼", "呵", "哈", "笑", "笑一声", "冷笑", "骂一句", "说一句")
 EXPRESSIVE_SHORT_TAILS = ("了", "嘛", "啊", "呀", "吧")
+
+
+def _caption_ids_with_dangling_boundary_candidates(captions: list[CaptionRenderUnit]) -> set[str]:
+    gate = build_final_caption_visible_repeat_gate(captions)
+    ids: set[str] = set()
+    for candidate in list(gate.get("dangling_prefix_suffix_candidates") or []):
+        for key in ("caption_id", "related_caption_id"):
+            value = str(candidate.get(key) or "")
+            if value:
+                ids.add(value)
+        for value in list(candidate.get("affected_caption_ids") or []):
+            if value:
+                ids.add(str(value))
+    return ids
+
+
+def _caption_source_range(
+    caption: CaptionRenderUnit,
+    source_graph: CanonicalSourceGraph,
+) -> tuple[int, int] | None:
+    words_by_id = {word.word_id: word for word in source_graph.words}
+    words = [words_by_id[word_id] for word_id in caption.word_ids if word_id in words_by_id]
+    if not words or len(words) != len(caption.word_ids):
+        no_range: tuple[int, int] | None = None
+        return no_range
+    start_us = min(int(getattr(word, "source_start_us", 0) or 0) for word in words)
+    end_us = max(int(getattr(word, "source_end_us", 0) or 0) for word in words)
+    if end_us <= start_us:
+        no_range: tuple[int, int] | None = None
+        return no_range
+    return start_us, end_us
+
+
+@dataclass(frozen=True)
+class PreVisibleSemanticJunkCandidateRule:
+    repair_pre_visible_semantic_junk_candidate: Callable[..., _RepairStep | None]
+    name: str = "pre_visible_semantic_junk_candidate"
+
+    def try_repair(
+        self,
+        *,
+        context: FinalVisibleRepairContext,
+        state: FinalVisibleRepairState,
+        pass_index: int,
+    ) -> _RepairStep | None:
+        return self.repair_pre_visible_semantic_junk_candidate(
+            final_timeline=state.final_timeline,
+            captions=state.captions,
+            source_graph=context.source_graph,
+            pass_index=pass_index,
+        )
+
+
+@dataclass(frozen=True)
+class IsolatedSemanticJunkCaptionRule:
+    repair_isolated_semantic_junk_caption: Callable[..., _RepairStep | None]
+    name: str = "isolated_semantic_junk_caption"
+
+    def try_repair(
+        self,
+        *,
+        context: FinalVisibleRepairContext,
+        state: FinalVisibleRepairState,
+        pass_index: int,
+    ) -> _RepairStep | None:
+        return self.repair_isolated_semantic_junk_caption(
+            final_timeline=state.final_timeline,
+            captions=state.captions,
+            source_graph=context.source_graph,
+            pass_index=pass_index,
+        )
 
 
 def _repair_pre_visible_semantic_junk_candidate(

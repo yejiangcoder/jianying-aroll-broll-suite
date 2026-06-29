@@ -1,10 +1,36 @@
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass, replace
+from typing import Any, Callable
 
-
-def configure_rule_dependencies(dependencies: dict[str, Any]) -> None:
-    globals().update(dependencies)
+from aroll_text_normalize import normalize_text
+from aroll_v21.ir.models import CanonicalSourceGraph, CaptionRenderUnit, FinalTimelineSegment
+from aroll_v21.quality.final_caption_visible_repeat import build_final_caption_visible_repeat_gate
+from aroll_v21.quality.final_visible_repair.context import FinalVisibleRepairContext
+from aroll_v21.quality.final_visible_repair.pipeline import FinalVisibleRepairState
+from aroll_v21.quality.final_visible_repair.report import _action, _is_suffix, _unique
+from aroll_v21.quality.final_visible_repair.result import _RepairStep
+from aroll_v21.quality.final_visible_repair.rules.word_span_edit import (
+    _merged_segment_pair_preserving_effective_speed,
+    _safe_merge_segments,
+    _segment_with_word_ids_preserving_effective_speed,
+    _target_duration_preserving_effective_speed,
+)
+from aroll_v21.quality.final_visible_repair.result import (
+    _SourceBoundaryCompoundCandidate,
+    _SourceBoundaryPrefixCandidate,
+)
+from aroll_v21.quality.final_visible_repair.text_boundary import (
+    join_visible_boundary_text as _join_visible_boundary_text,
+)
+from aroll_v21.quality.final_visible_repair.timeline_utils import (
+    ordered_segments as _ordered_segments,
+    text_from_word_ids as _text_from_word_ids,
+)
+from aroll_v21.quality.subtitle_readability import (
+    HARD_MAX_CHARS,
+    HARD_MAX_DURATION_US,
+)
 
 
 MAX_SOURCE_BOUNDARY_PREFIX_GAP_US = 600_000
@@ -50,6 +76,83 @@ MIN_TRANSFERRED_PREFIX_TARGET_US = 80_000
 
 
 MAX_TRANSFERRED_PREFIX_TARGET_US = 500_000
+MIN_REBALANCED_CAPTION_DURATION_US = 300_000
+
+
+@dataclass(frozen=True)
+class OmittedLegalReduplicationRule:
+    repair_omitted_legal_reduplication_word: Callable[..., _RepairStep | None]
+    name: str = "omitted_legal_reduplication"
+
+    def try_repair(
+        self,
+        *,
+        context: FinalVisibleRepairContext,
+        state: FinalVisibleRepairState,
+        pass_index: int,
+    ) -> _RepairStep | None:
+        return self.repair_omitted_legal_reduplication_word(
+            final_timeline=state.final_timeline,
+            source_graph=context.source_graph,
+            pass_index=pass_index,
+        )
+
+
+@dataclass(frozen=True)
+class SourceBoundaryPrefixGapRule:
+    repair_source_boundary_prefix_gap: Callable[..., _RepairStep | None]
+    name: str = "source_boundary_prefix_gap"
+
+    def try_repair(
+        self,
+        *,
+        context: FinalVisibleRepairContext,
+        state: FinalVisibleRepairState,
+        pass_index: int,
+    ) -> _RepairStep | None:
+        return self.repair_source_boundary_prefix_gap(
+            final_timeline=state.final_timeline,
+            source_graph=context.source_graph,
+            pass_index=pass_index,
+        )
+
+
+@dataclass(frozen=True)
+class SourceBoundaryCompoundSuffixRule:
+    repair_source_boundary_compound_suffix_gap: Callable[..., _RepairStep | None]
+    name: str = "source_boundary_compound_suffix"
+
+    def try_repair(
+        self,
+        *,
+        context: FinalVisibleRepairContext,
+        state: FinalVisibleRepairState,
+        pass_index: int,
+    ) -> _RepairStep | None:
+        return self.repair_source_boundary_compound_suffix_gap(
+            final_timeline=state.final_timeline,
+            source_graph=context.source_graph,
+            pass_index=pass_index,
+        )
+
+
+@dataclass(frozen=True)
+class SourceBoundaryTruncatedCompoundTailRule:
+    repair_source_boundary_truncated_compound_tail: Callable[..., _RepairStep | None]
+    name: str = "source_boundary_truncated_compound_tail"
+
+    def try_repair(
+        self,
+        *,
+        context: FinalVisibleRepairContext,
+        state: FinalVisibleRepairState,
+        pass_index: int,
+    ) -> _RepairStep | None:
+        return self.repair_source_boundary_truncated_compound_tail(
+            final_timeline=state.final_timeline,
+            source_graph=context.source_graph,
+            pass_index=pass_index,
+        )
 
 
 def _transfer_leading_function_prefix_to_previous_caption(

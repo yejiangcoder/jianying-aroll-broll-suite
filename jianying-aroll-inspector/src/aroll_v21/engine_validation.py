@@ -179,6 +179,7 @@ def _validator_blockers(self, report: dict[str, Any]) -> list[Blocker]:
         "subtitle_coverage_validator": ("SUBTITLE_COVERAGE_VALIDATOR_FAILED", "subtitle coverage validator failed"),
         "caption_alignment_gate": ("V21_CAPTION_SPOKEN_SPAN_ALIGNMENT_VALIDATOR", "caption spoken-span alignment validator failed"),
         "final_caption_visible_repeat_gate": ("V21_FINAL_CAPTION_VISIBLE_REPEAT_GATE_FAILED", "final visible caption repeat gate failed"),
+        "final_timeline_quality_guard_report": ("V21_FINAL_TIMELINE_QUALITY_GUARD_FAILED", "final timeline quality guard failed"),
         "subtitle_style_validator": ("SUBTITLE_STYLE_VALIDATOR_FAILED", "subtitle style validator failed"),
         "rough_cut_quality_validator": ("ROUGH_CUT_QUALITY_VALIDATOR_FAILED", "rough cut quality validator failed"),
         "postwrite_material_validator": ("POSTWRITE_MATERIAL_VALIDATOR_FAILED", "postwrite material validator failed"),
@@ -192,6 +193,7 @@ def _validator_blockers(self, report: dict[str, Any]) -> list[Blocker]:
         "subtitle_coverage_validator": "subtitle_coverage_gate_passed",
         "caption_alignment_gate": "gate_passed",
         "final_caption_visible_repeat_gate": "gate_passed",
+        "final_timeline_quality_guard_report": "gate_passed",
         "subtitle_style_validator": "prewrite_style_gate_ok",
         "rough_cut_quality_validator": "rough_cut_quality_gate_passed",
         "postwrite_material_validator": "postwrite_material_gate_ok",
@@ -264,6 +266,7 @@ def _attach_final_caption_visible_repeat_gate(
             semantic_adjudication_gate=report.get("semantic_final_review_validator"),
             visual_pacing_gate=report.get("visual_pacing_gate"),
             caption_alignment_gate=report.get("caption_alignment_gate"),
+            final_timeline_quality_guard_gate=report.get("final_timeline_quality_guard_report"),
             ready_for_user_manual_qc_preconditions_passed=base_ok and bool(visible_repeat_gate.get("gate_passed")),
         )
         report["quality_gate_report"] = quality_gate

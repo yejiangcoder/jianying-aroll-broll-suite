@@ -2,9 +2,19 @@ from __future__ import annotations
 
 from typing import Any
 
-
-def configure_rule_dependencies(dependencies: dict[str, Any]) -> None:
-    globals().update(dependencies)
+from aroll_text_normalize import normalize_text
+from aroll_v21.ir.models import CanonicalSourceGraph, CaptionRenderUnit, FinalTimelineSegment
+from aroll_v21.quality.final_visible_repair.report import _action
+from aroll_v21.quality.final_visible_repair.result import _RepairStep
+from aroll_v21.quality.final_visible_repair.rules.word_span_edit import (
+    _drop_or_trim_caption_words,
+    _leading_word_ids_for_text,
+    _segment_with_word_ids_preserving_effective_speed,
+)
+from aroll_v21.quality.final_visible_repair.timeline_utils import (
+    caption_by_id as _caption_by_id,
+    caption_segment_ids as _caption_segment_ids,
+)
 
 
 def _repair_de_shi_duplicate_bridge(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,7 +11,7 @@ from aroll_v21 import ArollEngine
 from aroll_v21.decision import SemanticAdjudicationDecisionType, SemanticDecisionPlanner
 from aroll_v21.decision.final_target_repeat_resolver import FinalTargetRepeatResolver
 from aroll_v21.engine import AUTO_PROVIDER_ROUTING_SKIPPED_CODE, FINAL_TARGET_PROVIDER_FAILURE_CODE
-from aroll_v21.ir import DecisionPlan
+from aroll_v21.ir import CaptionRenderUnit, DecisionPlan
 from aroll_v21.operator import ArollV21OperatorConfig, run_operator
 from tests.test_aroll_v21_semantic_adjudication_layer import (
     FailingSemanticProvider,
@@ -70,6 +71,25 @@ def _final_target_payload() -> dict:
         ],
         "allowed_decisions": ["keep_all", "drop_left", "drop_right", "requires_human_review"],
     }
+
+
+def _late_reconcile_fixture(engine: ArollEngine):
+    run_input = _final_target_input()
+    source_graph = engine.ingest.build_source_graph(
+        draft_data=run_input.draft_data,
+        word_timeline=run_input.word_timeline,
+        subtitles=run_input.subtitles,
+        source_segments=run_input.source_segments,
+        source_materials=run_input.source_materials,
+        text_materials=run_input.text_materials,
+        text_segments=run_input.text_segments,
+    )
+    plan = DecisionPlan(decisions=[])
+    final_timeline, blockers = engine.compiler.compile(source_graph, plan)
+    if blockers:
+        raise AssertionError(f"unexpected compile blockers: {blockers!r}")
+    captions = engine.renderer.render(final_timeline, source_graph)
+    return source_graph, plan, final_timeline, captions
 
 
 class RaisingSemanticProvider:
@@ -186,6 +206,119 @@ class ArollV21FinalTargetRepeatAutoProviderTests(unittest.TestCase):
         self.assertEqual(plan.semantic_unresolved_count, 1)
         self.assertEqual(semantic_report["semantic_request_unresolved_count"], 1)
         self.assertIn(FINAL_TARGET_PROVIDER_FAILURE_CODE, [blocker.code for blocker in plan.blockers])
+
+    def test_late_final_target_repeat_emits_request_before_validator(self) -> None:
+        engine = ArollEngine(semantic_mode="auto")
+        source_graph, plan, final_timeline, captions = _late_reconcile_fixture(engine)
+
+        with patch.object(FinalTargetRepeatResolver, "_clusters", _final_target_clusters):
+            final_timeline, captions, blockers = engine._reconcile_late_final_target_repeat_semantics(
+                final_timeline,
+                captions,
+                source_graph,
+                plan,
+                [],
+            )
+
+        self.assertEqual(blockers, [])
+        self.assertEqual([payload["cluster_id"] for payload in plan.semantic_request_payloads], ["final_target_repeat_tc_0001"])
+        self.assertEqual(plan.final_target_repeat_unresolved_cluster_ids, ["final_target_repeat_tc_0001"])
+        validator_report = {
+            "final_repeat_validator": {
+                "final_repeat_gate_passed": False,
+                "final_target_repeat_candidates": [
+                    {
+                        "cluster_id": "tc_0001",
+                        "cluster_type": "semantic_containment_take",
+                        "confidence": "medium",
+                    }
+                ],
+            }
+        }
+        self.assertEqual(engine._semantic_request_consistency_blockers(plan, validator_report), [])
+        self.assertEqual([segment.text for segment in final_timeline], ["红花开满山", "蓝月升过桥"])
+
+    def test_late_final_target_repeat_routes_provider_and_applies_decision(self) -> None:
+        provider = FakeSemanticProvider(SemanticAdjudicationDecisionType.DROP_RIGHT)
+        engine = ArollEngine(semantic_mode="auto", semantic_provider=provider)
+        source_graph, plan, final_timeline, captions = _late_reconcile_fixture(engine)
+        quality_mutations: list[dict] = []
+
+        with patch.object(FinalTargetRepeatResolver, "_clusters", _final_target_clusters):
+            final_timeline, captions, blockers = engine._reconcile_late_final_target_repeat_semantics(
+                final_timeline,
+                captions,
+                source_graph,
+                plan,
+                quality_mutations,
+            )
+
+        self.assertEqual(blockers, [])
+        self.assertEqual(len(provider.requests), 1)
+        self.assertEqual(provider.requests[0].issue_id, "final_target_repeat_tc_0001")
+        self.assertEqual([segment.text for segment in final_timeline], ["红花开满山"])
+        self.assertEqual(plan.semantic_request_payloads, [])
+        self.assertEqual(plan.final_target_repeat_unresolved_cluster_ids, [])
+        self.assertTrue(quality_mutations)
+
+    def test_late_final_target_repeat_visible_regression_requires_final_visible_repair(self) -> None:
+        engine = ArollEngine(semantic_mode="auto")
+        run_input = _two_caption_input("我们只能选择身边唯一合适的人", "的一个普通女同学正在认真讨论")
+        source_graph = engine.ingest.build_source_graph(
+            draft_data=run_input.draft_data,
+            word_timeline=run_input.word_timeline,
+            subtitles=run_input.subtitles,
+            source_segments=run_input.source_segments,
+            source_materials=run_input.source_materials,
+            text_materials=run_input.text_materials,
+            text_segments=run_input.text_segments,
+        )
+        plan = DecisionPlan(decisions=[])
+        split_timeline, blockers = engine.compiler.compile(source_graph, plan)
+        if blockers:
+            raise AssertionError(f"unexpected compile blockers: {blockers!r}")
+        merged = replace(
+            split_timeline[0],
+            source_end_us=split_timeline[1].source_end_us,
+            target_end_us=split_timeline[1].target_end_us,
+            word_ids=[*split_timeline[0].word_ids, *split_timeline[1].word_ids],
+            text="我们只能选择身边唯一合适的人的一个普通女同学正在认真讨论",
+        )
+        merged_caption = CaptionRenderUnit(
+            caption_id="v21_cap_merged",
+            timeline_segment_ids=[merged.segment_id],
+            word_ids=list(merged.word_ids),
+            text="我们只能选择合适的人普通同学讨论",
+            target_start_us=merged.target_start_us,
+            target_end_us=merged.target_end_us,
+            source_subtitle_uids=["s1", "s2"],
+            style_template_id="canonical_caption_template",
+        )
+        quality_mutations: list[dict] = []
+
+        def _regressing_resolve(_resolver, _segments, _decision_plan):  # type: ignore[no-untyped-def]
+            return list(split_timeline), []
+
+        with patch.object(FinalTargetRepeatResolver, "resolve", _regressing_resolve):
+            final_timeline, captions, blockers = engine._reconcile_late_final_target_repeat_semantics(
+                [merged],
+                [merged_caption],
+                source_graph,
+                plan,
+                quality_mutations,
+            )
+
+        self.assertEqual(blockers, [])
+        self.assertEqual(
+            [segment.text for segment in final_timeline],
+            ["我们只能选择身边唯一合适的人", "的一个普通女同学正在认真讨论"],
+        )
+        self.assertTrue(quality_mutations)
+        mutation = quality_mutations[-1]
+        self.assertTrue(mutation["accepted"])
+        self.assertTrue(mutation["audit_only"])
+        self.assertTrue(mutation["pending_final_visible_repair"])
+        self.assertEqual(mutation["audit_only_rejection_reason"], "final_visible_fatal_count_increased")
 
     def test_commit_reuses_final_target_repeat_semantic_cache(self) -> None:
         provider = FakeSemanticProvider(SemanticAdjudicationDecisionType.DROP_RIGHT)

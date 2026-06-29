@@ -3,11 +3,20 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, Callable
 
+from aroll_final_repeat_gate import build_final_repeat_gate_report
 from aroll_text_normalize import normalize_text
 from aroll_v21.ir.models import CanonicalSourceGraph, CaptionRenderUnit, FinalTimelineSegment
 from aroll_v21.quality.final_visible_repair.convergence import (
     _caption_only_state_signature as _caption_only_state_signature_impl,
     _repair_state_signature as _repair_state_signature_impl,
+)
+from aroll_v21.quality.final_visible_repair.context import FinalVisibleRepairContext
+from aroll_v21.quality.final_visible_repair.pipeline import (
+    FinalVisibleRepairPipelineResult,
+    ProposalRepairRule,
+    RepairRule,
+    StepRepairRule,
+    run_final_visible_repair_pipeline_once,
 )
 from aroll_v21.quality.final_visible_repair.report import (
     FINAL_VISIBLE_REPAIR_COUNT_KEYS,
@@ -40,6 +49,7 @@ from aroll_v21.quality.final_visible_repair.proposal import TimelineRepairPropos
 from aroll_v21.quality.final_visible_repair.timeline_materializer import (
     apply_timeline_repair_proposal as _apply_timeline_repair_proposal,
 )
+from aroll_v21.quality.final_timeline_repair_apply import apply_next_final_timeline_repair_intent, recompute_final_timeline_safe_handles
 from aroll_v21.quality.final_visible_repair.text_boundary import (
     DE_SHI_BOUNDARY_NORMALIZE_AFTER,
     de_shi_boundary_should_drop_de as _de_shi_boundary_should_drop_de,
@@ -82,6 +92,7 @@ CONTAINED_SHORT_FRAGMENT_OPEN_TAIL_CHARS = set("\u7684\u5f97\u5730\u4e4b\u5728\u
 OPEN_TAIL_SHORT_CAPTION_MAX_CHARS = 5
 OPEN_TAIL_SHORT_CAPTION_MAX_GAP_US = 120_000
 OPEN_TAIL_SHORT_CAPTION_MERGE_TAILS = set("\u7684\u5f97\u5730\u4e4b")
+OPEN_TAIL_OBJECT_CAPTION_MERGE_TAILS = set("\u628a\u88ab\u7ed9\u8ba9\u4f7f\u5bf9\u5411\u4e3a\u5c06")
 SHORT_ABORTED_PREFIX_MAX_CHARS = 5
 SHORT_ABORTED_PREFIX_MAX_GAP_US = 300_000
 COMMON_CLOSED_DE_PHRASES = {
@@ -149,562 +160,210 @@ def repair_final_visible_caption_issues(
     seen_signatures: set[tuple[Any, ...]] = {current_signature}
     stop_reason = ""
     passes_executed = 0
+    repair_context = FinalVisibleRepairContext(
+        source_graph=source_graph,
+        render_captions=render_captions,
+        repack_timeline=_repack_timeline,
+        renumber_captions=_renumber_captions,
+        render_captions_preserving_caption_only_materializations=_render_captions_preserving_caption_only_materializations,
+        repair_state_signature=_repair_state_signature,
+    )
+    transaction_rules: list[RepairRule] = [
+        StepRepairRule(
+            name="final_timeline_quality_intent.apply_next",
+            repair_step=_repair_final_timeline_quality_intent,
+            include_current_captions=True,
+            include_render_captions=True,
+        ),
+        _leading_filler_rules.LeadingFillerGapRule(repair_leading_filler_gap=_repair_leading_filler_gap),
+        _connector_intrusion_rules.ConnectorSingleWordIntrusionRule(
+            repair_connector_single_word_intrusion=_repair_connector_single_word_intrusion,
+        ),
+        _connector_intrusion_rules.ConnectorFillerRestartRule(
+            repair_connector_filler_restart=_repair_connector_filler_restart,
+        ),
+        _connector_intrusion_rules.RepeatedObjectHeadTailRule(
+            repair_repeated_object_head_tail=_repair_repeated_object_head_tail,
+        ),
+        _connector_intrusion_rules.SubjectPrefixCompletedPredicateRestartRule(
+            repair_subject_prefix_completed_predicate_restart=_repair_subject_prefix_completed_predicate_restart,
+        ),
+        _pre_visible_semantic_junk_rules.PreVisibleSemanticJunkCandidateRule(
+            repair_pre_visible_semantic_junk_candidate=_repair_pre_visible_semantic_junk_candidate,
+        ),
+        StepRepairRule(
+            name="final_repeat.caption_aborted_containment",
+            repair_step=_repair_caption_level_final_repeat_aborted_containment,
+            include_current_captions=True,
+        ),
+        _source_boundary_prefix_rules.OmittedLegalReduplicationRule(
+            repair_omitted_legal_reduplication_word=_repair_omitted_legal_reduplication_word,
+        ),
+        _source_boundary_prefix_rules.SourceBoundaryPrefixGapRule(
+            repair_source_boundary_prefix_gap=_repair_source_boundary_prefix_gap,
+        ),
+        _source_boundary_prefix_rules.SourceBoundaryCompoundSuffixRule(
+            repair_source_boundary_compound_suffix_gap=_repair_source_boundary_compound_suffix_gap,
+        ),
+        _source_boundary_prefix_rules.SourceBoundaryTruncatedCompoundTailRule(
+            repair_source_boundary_truncated_compound_tail=_repair_source_boundary_truncated_compound_tail,
+        ),
+        _pre_visible_semantic_junk_rules.IsolatedSemanticJunkCaptionRule(
+            repair_isolated_semantic_junk_caption=_repair_isolated_semantic_junk_caption,
+        ),
+    ]
+    residual_transaction_rules: list[RepairRule] = [
+        _short_residual_rules.ShortRepairResidualRule(
+            repair_short_repair_residual_segments=_repair_short_repair_residual_segments,
+        )
+    ]
+    proposal_transaction_rules: list[RepairRule] = [
+        ProposalRepairRule(
+            name="proposal.repeated_island",
+            repair_with_proposal=_repair_repeated_island_with_proposal,
+        ),
+        ProposalRepairRule(
+            name="proposal.boundary_restart",
+            repair_with_proposal=_repair_boundary_restart_with_proposal,
+        ),
+        ProposalRepairRule(
+            name="proposal.contained_short_fragment",
+            repair_with_proposal=_repair_contained_short_fragment_with_proposal,
+            include_current_captions=True,
+        ),
+        ProposalRepairRule(
+            name="proposal.self_repair_aborted_phrase",
+            repair_with_proposal=_repair_self_repair_aborted_phrase_with_proposal,
+            include_current_captions=True,
+        ),
+        ProposalRepairRule(
+            name="proposal.short_aborted_prefix_caption",
+            repair_with_proposal=_repair_short_aborted_prefix_caption_with_proposal,
+            include_current_captions=True,
+        ),
+    ]
+    open_tail_transaction_rules: list[RepairRule] = [
+        StepRepairRule(
+            name="open_tail_short_caption",
+            repair_step=_repair_open_tail_short_caption_with_next,
+            include_current_captions=True,
+            include_render_captions=True,
+        )
+    ]
+    tail_proposal_transaction_rules: list[RepairRule] = [
+        ProposalRepairRule(
+            name="proposal.fatal_tiny_caption",
+            repair_with_proposal=_repair_fatal_tiny_caption_with_proposal,
+            include_current_captions=True,
+        )
+    ]
+    caption_only_finalizer_rules: list[RepairRule] = [
+        _caption_only_merge_rules.CaptionOnlyFinalizerRule(
+            name="caption_only_finalizer.dangling_merges",
+            finalize_captions=_finalize_caption_only_dangling_merges,
+        ),
+        _caption_only_merge_rules.CaptionOnlyFinalizerRule(
+            name="caption_only_finalizer.subject_prefix_completed_predicate",
+            finalize_captions=_finalize_subject_prefix_completed_predicate_caption_merges,
+            include_final_timeline=True,
+        ),
+        _caption_only_merge_rules.CaptionOnlyFinalizerRule(
+            name="caption_only_finalizer.same_subtitle_short_tail",
+            finalize_captions=_finalize_same_subtitle_short_tail_caption_merges,
+        ),
+    ]
+
+    def consume_pipeline_result(
+        result: FinalVisibleRepairPipelineResult,
+        *,
+        pass_index: int,
+    ) -> str:
+        nonlocal current_timeline, current_captions, current_signature, stop_reason
+        if result.unresolved is not None:
+            unresolved.append(result.unresolved)
+            stop_reason = str(result.unresolved.get("reason") or f"{result.unresolved_rule_name}_failed")
+            return "stop"
+        if result.transaction is None:
+            return "empty"
+        transaction = result.transaction
+        current_timeline = result.final_timeline
+        current_captions = result.captions
+        current_signature = result.signature
+        actions.extend(transaction.actions or [transaction.action])
+        if transaction.accepted:
+            seen_signatures.add(result.signature)
+            return "accepted"
+        stop_reason = transaction.rejection_reason
+        unresolved.append(
+            {
+                "pass_index": pass_index,
+                "reason": stop_reason,
+                "last_action": transaction.action,
+                "repair_transaction_rule_name": transaction.rule_name,
+            }
+        )
+        return "stop"
 
     for pass_index in range(max_pass_limit):
         passes_executed = pass_index + 1
-        leading_filler_step = _repair_leading_filler_gap(
-            final_timeline=current_timeline,
-            source_graph=source_graph,
-            pass_index=pass_index + 1,
-        )
-        if leading_filler_step is not None:
-            previous_captions = current_captions
-            current_timeline = _repack_timeline(leading_filler_step.final_timeline)
-            current_captions = _render_captions_preserving_caption_only_materializations(
-                current_timeline,
-                previous_captions,
-                render_captions,
-            )
-            actions.append(leading_filler_step.action)
-            next_signature = _repair_state_signature(current_timeline, current_captions)
-            if next_signature == current_signature or next_signature in seen_signatures:
-                stop_reason = "no_progress_detected"
-                unresolved.append(
-                    {
-                        "pass_index": pass_index + 1,
-                        "reason": stop_reason,
-                        "last_action": leading_filler_step.action,
-                    }
-                )
-                break
-            seen_signatures.add(next_signature)
-            current_signature = next_signature
-            continue
-
-        connector_intrusion_step = _repair_connector_single_word_intrusion(
-            final_timeline=current_timeline,
-            source_graph=source_graph,
-            pass_index=pass_index + 1,
-        )
-        if connector_intrusion_step is not None:
-            previous_captions = current_captions
-            current_timeline = _repack_timeline(connector_intrusion_step.final_timeline)
-            current_captions = _render_captions_preserving_caption_only_materializations(
-                current_timeline,
-                previous_captions,
-                render_captions,
-            )
-            actions.append(connector_intrusion_step.action)
-            next_signature = _repair_state_signature(current_timeline, current_captions)
-            if next_signature == current_signature or next_signature in seen_signatures:
-                stop_reason = "no_progress_detected"
-                unresolved.append(
-                    {
-                        "pass_index": pass_index + 1,
-                        "reason": stop_reason,
-                        "last_action": connector_intrusion_step.action,
-                    }
-                )
-                break
-            seen_signatures.add(next_signature)
-            current_signature = next_signature
-            continue
-
-        connector_restart_step = _repair_connector_filler_restart(
-            final_timeline=current_timeline,
-            source_graph=source_graph,
-            pass_index=pass_index + 1,
-        )
-        if connector_restart_step is not None:
-            previous_captions = current_captions
-            current_timeline = _repack_timeline(connector_restart_step.final_timeline)
-            current_captions = _render_captions_preserving_caption_only_materializations(
-                current_timeline,
-                previous_captions,
-                render_captions,
-            )
-            actions.append(connector_restart_step.action)
-            next_signature = _repair_state_signature(current_timeline, current_captions)
-            if next_signature == current_signature or next_signature in seen_signatures:
-                stop_reason = "no_progress_detected"
-                unresolved.append(
-                    {
-                        "pass_index": pass_index + 1,
-                        "reason": stop_reason,
-                        "last_action": connector_restart_step.action,
-                    }
-                )
-                break
-            seen_signatures.add(next_signature)
-            current_signature = next_signature
-            continue
-
-        repeated_object_head_step = _repair_repeated_object_head_tail(
-            final_timeline=current_timeline,
-            source_graph=source_graph,
-            pass_index=pass_index + 1,
-        )
-        if repeated_object_head_step is not None:
-            previous_captions = current_captions
-            current_timeline = _repack_timeline(repeated_object_head_step.final_timeline)
-            current_captions = _render_captions_preserving_caption_only_materializations(
-                current_timeline,
-                previous_captions,
-                render_captions,
-            )
-            actions.append(repeated_object_head_step.action)
-            next_signature = _repair_state_signature(current_timeline, current_captions)
-            if next_signature == current_signature or next_signature in seen_signatures:
-                stop_reason = "no_progress_detected"
-                unresolved.append(
-                    {
-                        "pass_index": pass_index + 1,
-                        "reason": stop_reason,
-                        "last_action": repeated_object_head_step.action,
-                    }
-                )
-                break
-            seen_signatures.add(next_signature)
-            current_signature = next_signature
-            continue
-
-        subject_prefix_restart_step = _repair_subject_prefix_completed_predicate_restart(
-            final_timeline=current_timeline,
-            source_graph=source_graph,
-            pass_index=pass_index + 1,
-        )
-        if subject_prefix_restart_step is not None:
-            previous_captions = current_captions
-            current_timeline = _repack_timeline(subject_prefix_restart_step.final_timeline)
-            current_captions = _render_captions_preserving_caption_only_materializations(
-                current_timeline,
-                previous_captions,
-                render_captions,
-            )
-            actions.append(subject_prefix_restart_step.action)
-            next_signature = _repair_state_signature(current_timeline, current_captions)
-            if next_signature == current_signature or next_signature in seen_signatures:
-                stop_reason = "no_progress_detected"
-                unresolved.append(
-                    {
-                        "pass_index": pass_index + 1,
-                        "reason": stop_reason,
-                        "last_action": subject_prefix_restart_step.action,
-                    }
-                )
-                break
-            seen_signatures.add(next_signature)
-            current_signature = next_signature
-            continue
-
-        pre_semantic_junk_step = _repair_pre_visible_semantic_junk_candidate(
+        transaction_result = run_final_visible_repair_pipeline_once(
+            context=repair_context,
             final_timeline=current_timeline,
             captions=current_captions,
-            source_graph=source_graph,
             pass_index=pass_index + 1,
+            current_signature=current_signature,
+            seen_signatures=seen_signatures,
+            rules=transaction_rules,
         )
-        if pre_semantic_junk_step is not None:
-            previous_captions = current_captions
-            current_timeline = _repack_timeline(pre_semantic_junk_step.final_timeline)
-            current_captions = _render_captions_preserving_caption_only_materializations(
-                current_timeline,
-                previous_captions,
-                render_captions,
-            )
-            actions.append(pre_semantic_junk_step.action)
-            next_signature = _repair_state_signature(current_timeline, current_captions)
-            if next_signature == current_signature or next_signature in seen_signatures:
-                stop_reason = "no_progress_detected"
-                unresolved.append(
-                    {
-                        "pass_index": pass_index + 1,
-                        "reason": stop_reason,
-                        "last_action": pre_semantic_junk_step.action,
-                    }
-                )
-                break
-            seen_signatures.add(next_signature)
-            current_signature = next_signature
-            continue
-
-        omitted_reduplication_step = _repair_omitted_legal_reduplication_word(
-            final_timeline=current_timeline,
-            source_graph=source_graph,
-            pass_index=pass_index + 1,
-        )
-        if omitted_reduplication_step is not None:
-            previous_captions = current_captions
-            current_timeline = _repack_timeline(omitted_reduplication_step.final_timeline)
-            current_captions = _render_captions_preserving_caption_only_materializations(
-                current_timeline,
-                previous_captions,
-                render_captions,
-            )
-            actions.append(omitted_reduplication_step.action)
-            next_signature = _repair_state_signature(current_timeline, current_captions)
-            if next_signature == current_signature or next_signature in seen_signatures:
-                stop_reason = "no_progress_detected"
-                unresolved.append(
-                    {
-                        "pass_index": pass_index + 1,
-                        "reason": stop_reason,
-                        "last_action": omitted_reduplication_step.action,
-                    }
-                )
-                break
-            seen_signatures.add(next_signature)
-            current_signature = next_signature
-            continue
-
-        source_prefix_step = _repair_source_boundary_prefix_gap(
-            final_timeline=current_timeline,
-            source_graph=source_graph,
-            pass_index=pass_index + 1,
-        )
-        if source_prefix_step is not None:
-            previous_captions = current_captions
-            current_timeline = _repack_timeline(source_prefix_step.final_timeline)
-            current_captions = _render_captions_preserving_caption_only_materializations(
-                current_timeline,
-                previous_captions,
-                render_captions,
-            )
-            actions.append(source_prefix_step.action)
-            next_signature = _repair_state_signature(current_timeline, current_captions)
-            if next_signature == current_signature or next_signature in seen_signatures:
-                stop_reason = "no_progress_detected"
-                unresolved.append(
-                    {
-                        "pass_index": pass_index + 1,
-                        "reason": stop_reason,
-                        "last_action": source_prefix_step.action,
-                    }
-                )
-                break
-            seen_signatures.add(next_signature)
-            current_signature = next_signature
-            continue
-
-        compound_step = _repair_source_boundary_compound_suffix_gap(
-            final_timeline=current_timeline,
-            source_graph=source_graph,
-            pass_index=pass_index + 1,
-        )
-        if compound_step is not None:
-            previous_captions = current_captions
-            current_timeline = _repack_timeline(compound_step.final_timeline)
-            current_captions = _render_captions_preserving_caption_only_materializations(
-                current_timeline,
-                previous_captions,
-                render_captions,
-            )
-            actions.append(compound_step.action)
-            next_signature = _repair_state_signature(current_timeline, current_captions)
-            if next_signature == current_signature or next_signature in seen_signatures:
-                stop_reason = "no_progress_detected"
-                unresolved.append(
-                    {
-                        "pass_index": pass_index + 1,
-                        "reason": stop_reason,
-                        "last_action": compound_step.action,
-                    }
-                )
-                break
-            seen_signatures.add(next_signature)
-            current_signature = next_signature
-            continue
-
-        truncated_tail_step = _repair_source_boundary_truncated_compound_tail(
-            final_timeline=current_timeline,
-            source_graph=source_graph,
-            pass_index=pass_index + 1,
-        )
-        if truncated_tail_step is not None:
-            previous_captions = current_captions
-            current_timeline = _repack_timeline(truncated_tail_step.final_timeline)
-            current_captions = _render_captions_preserving_caption_only_materializations(
-                current_timeline,
-                previous_captions,
-                render_captions,
-            )
-            actions.append(truncated_tail_step.action)
-            next_signature = _repair_state_signature(current_timeline, current_captions)
-            if next_signature == current_signature or next_signature in seen_signatures:
-                stop_reason = "no_progress_detected"
-                unresolved.append(
-                    {
-                        "pass_index": pass_index + 1,
-                        "reason": stop_reason,
-                        "last_action": truncated_tail_step.action,
-                    }
-                )
-                break
-            seen_signatures.add(next_signature)
-            current_signature = next_signature
-            continue
-
-        junk_step = _repair_isolated_semantic_junk_caption(
-            final_timeline=current_timeline,
-            captions=current_captions,
-            source_graph=source_graph,
-            pass_index=pass_index + 1,
-        )
-        if junk_step is not None:
-            previous_captions = current_captions
-            current_timeline = _repack_timeline(junk_step.final_timeline)
-            current_captions = _render_captions_preserving_caption_only_materializations(
-                current_timeline,
-                previous_captions,
-                render_captions,
-            )
-            actions.append(junk_step.action)
-            next_signature = _repair_state_signature(current_timeline, current_captions)
-            if next_signature == current_signature or next_signature in seen_signatures:
-                stop_reason = "no_progress_detected"
-                unresolved.append(
-                    {
-                        "pass_index": pass_index + 1,
-                        "reason": stop_reason,
-                        "last_action": junk_step.action,
-                    }
-                )
-                break
-            seen_signatures.add(next_signature)
-            current_signature = next_signature
-            continue
-
-        repeated_island_step, repeated_island_unresolved = _repair_repeated_island_with_proposal(
-            final_timeline=current_timeline,
-            source_graph=source_graph,
-            render_captions=render_captions,
-            pass_index=pass_index + 1,
-        )
-        if repeated_island_unresolved is not None:
-            unresolved.append(repeated_island_unresolved)
-            stop_reason = str(repeated_island_unresolved.get("reason") or "repeated_island_proposal_failed")
+        transaction_status = consume_pipeline_result(transaction_result, pass_index=pass_index + 1)
+        if transaction_status == "stop":
             break
-        if repeated_island_step is not None:
-            previous_captions = current_captions
-            current_timeline = _repack_timeline(repeated_island_step.final_timeline)
-            current_captions = _render_captions_preserving_caption_only_materializations(
-                current_timeline,
-                previous_captions,
-                render_captions,
-            )
-            actions.append(repeated_island_step.action)
-            next_signature = _repair_state_signature(current_timeline, current_captions)
-            if next_signature == current_signature or next_signature in seen_signatures:
-                stop_reason = "no_progress_detected"
-                unresolved.append(
-                    {
-                        "pass_index": pass_index + 1,
-                        "reason": stop_reason,
-                        "last_action": repeated_island_step.action,
-                    }
-                )
-                break
-            seen_signatures.add(next_signature)
-            current_signature = next_signature
+        if transaction_status == "accepted":
             continue
 
-        boundary_restart_step, boundary_restart_unresolved = _repair_boundary_restart_with_proposal(
-            final_timeline=current_timeline,
-            source_graph=source_graph,
-            render_captions=render_captions,
-            pass_index=pass_index + 1,
-        )
-        if boundary_restart_unresolved is not None:
-            unresolved.append(boundary_restart_unresolved)
-            stop_reason = str(boundary_restart_unresolved.get("reason") or "boundary_restart_proposal_failed")
-            break
-        if boundary_restart_step is not None:
-            previous_captions = current_captions
-            current_timeline = _repack_timeline(boundary_restart_step.final_timeline)
-            current_captions = _render_captions_preserving_caption_only_materializations(
-                current_timeline,
-                previous_captions,
-                render_captions,
-            )
-            actions.append(boundary_restart_step.action)
-            next_signature = _repair_state_signature(current_timeline, current_captions)
-            if next_signature == current_signature or next_signature in seen_signatures:
-                stop_reason = "no_progress_detected"
-                unresolved.append(
-                    {
-                        "pass_index": pass_index + 1,
-                        "reason": stop_reason,
-                        "last_action": boundary_restart_step.action,
-                    }
-                )
-                break
-            seen_signatures.add(next_signature)
-            current_signature = next_signature
-            continue
-
-        containment_fragment_step, containment_fragment_unresolved = _repair_contained_short_fragment_with_proposal(
+        proposal_result = run_final_visible_repair_pipeline_once(
+            context=repair_context,
             final_timeline=current_timeline,
             captions=current_captions,
-            source_graph=source_graph,
-            render_captions=render_captions,
             pass_index=pass_index + 1,
+            current_signature=current_signature,
+            seen_signatures=seen_signatures,
+            rules=proposal_transaction_rules,
         )
-        if containment_fragment_unresolved is not None:
-            unresolved.append(containment_fragment_unresolved)
-            stop_reason = str(containment_fragment_unresolved.get("reason") or "contained_short_fragment_proposal_failed")
+        proposal_status = consume_pipeline_result(proposal_result, pass_index=pass_index + 1)
+        if proposal_status == "stop":
             break
-        if containment_fragment_step is not None:
-            previous_captions = current_captions
-            current_timeline = _repack_timeline(containment_fragment_step.final_timeline)
-            current_captions = _render_captions_preserving_caption_only_materializations(
-                current_timeline,
-                previous_captions,
-                render_captions,
-            )
-            actions.append(containment_fragment_step.action)
-            next_signature = _repair_state_signature(current_timeline, current_captions)
-            if next_signature == current_signature or next_signature in seen_signatures:
-                stop_reason = "no_progress_detected"
-                unresolved.append(
-                    {
-                        "pass_index": pass_index + 1,
-                        "reason": stop_reason,
-                        "last_action": containment_fragment_step.action,
-                    }
-                )
-                break
-            seen_signatures.add(next_signature)
-            current_signature = next_signature
+        if proposal_status == "accepted":
             continue
 
-        self_repair_step, self_repair_unresolved = _repair_self_repair_aborted_phrase_with_proposal(
+        open_tail_result = run_final_visible_repair_pipeline_once(
+            context=repair_context,
             final_timeline=current_timeline,
             captions=current_captions,
-            source_graph=source_graph,
-            render_captions=render_captions,
             pass_index=pass_index + 1,
+            current_signature=current_signature,
+            seen_signatures=seen_signatures,
+            rules=open_tail_transaction_rules,
         )
-        if self_repair_unresolved is not None:
-            unresolved.append(self_repair_unresolved)
-            stop_reason = str(self_repair_unresolved.get("reason") or "self_repair_aborted_phrase_proposal_failed")
+        open_tail_status = consume_pipeline_result(open_tail_result, pass_index=pass_index + 1)
+        if open_tail_status == "stop":
             break
-        if self_repair_step is not None:
-            previous_captions = current_captions
-            current_timeline = _repack_timeline(self_repair_step.final_timeline)
-            current_captions = _render_captions_preserving_caption_only_materializations(
-                current_timeline,
-                previous_captions,
-                render_captions,
-            )
-            actions.append(self_repair_step.action)
-            next_signature = _repair_state_signature(current_timeline, current_captions)
-            if next_signature == current_signature or next_signature in seen_signatures:
-                stop_reason = "no_progress_detected"
-                unresolved.append(
-                    {
-                        "pass_index": pass_index + 1,
-                        "reason": stop_reason,
-                        "last_action": self_repair_step.action,
-                    }
-                )
-                break
-            seen_signatures.add(next_signature)
-            current_signature = next_signature
+        if open_tail_status == "accepted":
             continue
 
-        short_aborted_prefix_step, short_aborted_prefix_unresolved = _repair_short_aborted_prefix_caption_with_proposal(
+        tail_proposal_result = run_final_visible_repair_pipeline_once(
+            context=repair_context,
             final_timeline=current_timeline,
             captions=current_captions,
-            source_graph=source_graph,
-            render_captions=render_captions,
             pass_index=pass_index + 1,
+            current_signature=current_signature,
+            seen_signatures=seen_signatures,
+            rules=tail_proposal_transaction_rules,
         )
-        if short_aborted_prefix_unresolved is not None:
-            unresolved.append(short_aborted_prefix_unresolved)
-            stop_reason = str(short_aborted_prefix_unresolved.get("reason") or "short_aborted_prefix_caption_proposal_failed")
+        tail_proposal_status = consume_pipeline_result(tail_proposal_result, pass_index=pass_index + 1)
+        if tail_proposal_status == "stop":
             break
-        if short_aborted_prefix_step is not None:
-            previous_captions = current_captions
-            current_timeline = _repack_timeline(short_aborted_prefix_step.final_timeline)
-            current_captions = _render_captions_preserving_caption_only_materializations(
-                current_timeline,
-                previous_captions,
-                render_captions,
-            )
-            actions.append(short_aborted_prefix_step.action)
-            next_signature = _repair_state_signature(current_timeline, current_captions)
-            if next_signature == current_signature or next_signature in seen_signatures:
-                stop_reason = "no_progress_detected"
-                unresolved.append(
-                    {
-                        "pass_index": pass_index + 1,
-                        "reason": stop_reason,
-                        "last_action": short_aborted_prefix_step.action,
-                    }
-                )
-                break
-            seen_signatures.add(next_signature)
-            current_signature = next_signature
-            continue
-
-        open_tail_merge_step = _repair_open_tail_short_caption_with_next(
-            final_timeline=current_timeline,
-            captions=current_captions,
-            source_graph=source_graph,
-            render_captions=render_captions,
-            pass_index=pass_index + 1,
-        )
-        if open_tail_merge_step is not None:
-            current_timeline = _repack_timeline(open_tail_merge_step.final_timeline)
-            current_captions = open_tail_merge_step.captions
-            actions.append(open_tail_merge_step.action)
-            next_signature = _repair_state_signature(current_timeline, current_captions)
-            if next_signature == current_signature or next_signature in seen_signatures:
-                stop_reason = "no_progress_detected"
-                unresolved.append(
-                    {
-                        "pass_index": pass_index + 1,
-                        "reason": stop_reason,
-                        "last_action": open_tail_merge_step.action,
-                    }
-                )
-                break
-            seen_signatures.add(next_signature)
-            current_signature = next_signature
-            continue
-
-        tiny_residual_step, tiny_residual_unresolved = _repair_fatal_tiny_caption_with_proposal(
-            final_timeline=current_timeline,
-            captions=current_captions,
-            source_graph=source_graph,
-            render_captions=render_captions,
-            pass_index=pass_index + 1,
-        )
-        if tiny_residual_unresolved is not None:
-            unresolved.append(tiny_residual_unresolved)
-            stop_reason = str(tiny_residual_unresolved.get("reason") or "tiny_caption_residual_proposal_failed")
-            break
-        if tiny_residual_step is not None:
-            previous_captions = current_captions
-            current_timeline = _repack_timeline(tiny_residual_step.final_timeline)
-            current_captions = _render_captions_preserving_caption_only_materializations(
-                current_timeline,
-                previous_captions,
-                render_captions,
-            )
-            actions.append(tiny_residual_step.action)
-            next_signature = _repair_state_signature(current_timeline, current_captions)
-            if next_signature == current_signature or next_signature in seen_signatures:
-                stop_reason = "no_progress_detected"
-                unresolved.append(
-                    {
-                        "pass_index": pass_index + 1,
-                        "reason": stop_reason,
-                        "last_action": tiny_residual_step.action,
-                    }
-                )
-                break
-            seen_signatures.add(next_signature)
-            current_signature = next_signature
+        if tail_proposal_status == "accepted":
             continue
 
         rendered_gate = build_final_caption_visible_repeat_gate(current_captions)
@@ -716,31 +375,36 @@ def repair_final_visible_caption_issues(
         if not any(rendered_counts.values()) and not any(timeline_counts.values()):
             stop_reason = "converged"
             break
-        step = _repair_next_issue(
+        gate_candidate_result = run_final_visible_repair_pipeline_once(
+            context=repair_context,
             final_timeline=current_timeline,
             captions=current_captions,
-            source_graph=source_graph,
-            gate=rendered_gate,
             pass_index=pass_index + 1,
-            issue_types={"dangling_prefix_suffix"},
+            current_signature=current_signature,
+            seen_signatures=seen_signatures,
+            rules=[
+                _restart_repeat_rules.GateCandidateRepairRule(
+                    name="gate_candidate.rendered_dangling_prefix",
+                    repair_next_issue=_repair_next_issue,
+                    gate=rendered_gate,
+                    candidate_captions=current_captions,
+                    issue_types={"dangling_prefix_suffix"},
+                ),
+                _restart_repeat_rules.GateCandidateRepairRule(
+                    name="gate_candidate.timeline_gate",
+                    repair_next_issue=_repair_next_issue,
+                    gate=timeline_gate,
+                    candidate_captions=effective_timeline_captions,
+                ),
+                _restart_repeat_rules.GateCandidateRepairRule(
+                    name="gate_candidate.rendered_gate",
+                    repair_next_issue=_repair_next_issue,
+                    gate=rendered_gate,
+                    candidate_captions=current_captions,
+                ),
+            ],
         )
-        if step is None:
-            step = _repair_next_issue(
-                final_timeline=current_timeline,
-                captions=effective_timeline_captions,
-                source_graph=source_graph,
-                gate=timeline_gate,
-                pass_index=pass_index + 1,
-            )
-        if step is None:
-            step = _repair_next_issue(
-                final_timeline=current_timeline,
-                captions=current_captions,
-                source_graph=source_graph,
-                gate=rendered_gate,
-                pass_index=pass_index + 1,
-            )
-        if step is None:
+        if gate_candidate_result.transaction is None:
             unresolved.append(
                 {
                     "pass_index": pass_index + 1,
@@ -753,66 +417,49 @@ def repair_final_visible_caption_issues(
             )
             stop_reason = "no_safe_deterministic_repair_available"
             break
-        previous_captions = current_captions
-        current_timeline = _repack_timeline(step.final_timeline)
-        current_captions = (
-            _render_captions_preserving_caption_only_materializations(
-                current_timeline,
-                previous_captions,
-                render_captions,
-            )
-            if step.timeline_changed
-            else _renumber_captions(step.captions)
-        )
-        actions.append(step.action)
-        next_signature = _repair_state_signature(current_timeline, current_captions)
-        if next_signature == current_signature or next_signature in seen_signatures:
-            stop_reason = "no_progress_detected"
-            unresolved.append(
-                {
-                    "pass_index": pass_index + 1,
-                    "reason": stop_reason,
-                    "last_action": step.action,
-                }
-            )
+        gate_candidate_status = consume_pipeline_result(gate_candidate_result, pass_index=pass_index + 1)
+        if gate_candidate_status == "stop":
             break
-        seen_signatures.add(next_signature)
-        current_signature = next_signature
+        continue
 
-    residual_step = _repair_short_repair_residual_segments(
+    residual_result = run_final_visible_repair_pipeline_once(
+        context=repair_context,
         final_timeline=current_timeline,
+        captions=current_captions,
+        pass_index=len(actions) + 1,
+        current_signature=current_signature,
+        seen_signatures=seen_signatures,
+        rules=residual_transaction_rules,
+    )
+    consume_pipeline_result(residual_result, pass_index=len(actions) + 1)
+
+    for caption_only_finalizer_rule in caption_only_finalizer_rules:
+        caption_only_result = run_final_visible_repair_pipeline_once(
+            context=repair_context,
+            final_timeline=current_timeline,
+            captions=current_captions,
+            pass_index=len(actions) + 1,
+            current_signature=current_signature,
+            seen_signatures=seen_signatures,
+            rules=[caption_only_finalizer_rule],
+        )
+        caption_only_status = consume_pipeline_result(caption_only_result, pass_index=len(actions) + 1)
+        if caption_only_status == "stop":
+            break
+
+    final_safe_handle_result = recompute_final_timeline_safe_handles(
+        final_timeline=current_timeline,
+        captions=current_captions,
         source_graph=source_graph,
+        render_captions=render_captions,
         pass_index=len(actions) + 1,
     )
-    if residual_step is not None:
-        previous_captions = current_captions
-        current_timeline = _repack_timeline(residual_step.final_timeline)
-        current_captions = _render_captions_preserving_caption_only_materializations(
-            current_timeline,
-            previous_captions,
-            render_captions,
-        )
-        actions.append(residual_step.action)
-
-    current_captions, final_caption_only_actions = _finalize_caption_only_dangling_merges(
-        current_captions,
-        source_graph=source_graph,
-        pass_index_start=len(actions) + 1,
-    )
-    actions.extend(final_caption_only_actions)
-    current_captions, subject_prefix_caption_actions = _finalize_subject_prefix_completed_predicate_caption_merges(
-        current_captions,
-        final_timeline=current_timeline,
-        source_graph=source_graph,
-        pass_index_start=len(actions) + 1,
-    )
-    actions.extend(subject_prefix_caption_actions)
-    current_captions, same_subtitle_short_tail_actions = _finalize_same_subtitle_short_tail_caption_merges(
-        current_captions,
-        source_graph=source_graph,
-        pass_index_start=len(actions) + 1,
-    )
-    actions.extend(same_subtitle_short_tail_actions)
+    if final_safe_handle_result is not None:
+        current_timeline = final_safe_handle_result.final_timeline
+        current_captions = final_safe_handle_result.captions
+        actions.extend([final_safe_handle_result.action])
+        current_signature = _repair_state_signature(current_timeline, current_captions)
+        seen_signatures.add(current_signature)
 
     final_gate = build_final_caption_visible_repeat_gate(current_captions)
     final_semantic_junk_report = build_pre_visible_semantic_junk_candidate_report(current_captions, source_graph)
@@ -856,6 +503,16 @@ def repair_final_visible_caption_issues(
         for action in actions
         if str(action.get("proposal_id") or "")
     ]
+    final_timeline_intent_actions = [
+        action
+        for action in actions
+        if str(action.get("issue_type") or "") == "final_timeline_repair_intent"
+    ]
+    transaction_actions = [
+        action
+        for action in actions
+        if str(action.get("repair_transaction_rule_name") or "")
+    ]
     final_counts = _repair_counts(final_gate)
     final_timeline_counts = _repair_counts(final_timeline_gate)
     repair_success = not any(final_counts.values()) and not any(final_timeline_counts.values())
@@ -890,6 +547,11 @@ def repair_final_visible_caption_issues(
         "final_visible_repair_progress_state_count": len(seen_signatures),
         "final_visible_repair_action_count": len(actions),
         "final_visible_repair_actions": actions,
+        "final_visible_repair_transaction_count": len(transaction_actions),
+        "final_visible_repair_transaction_rule_names": _unique(
+            [str(action.get("repair_transaction_rule_name") or "") for action in transaction_actions]
+        ),
+        "final_visible_repair_pipeline_rule_names": [rule.name for rule in transaction_rules],
         "final_visible_repair_unresolved": unresolved,
         "final_visible_repair_initial_counts": _repair_counts(initial_gate),
         "final_visible_repair_initial_timeline_counts": _repair_counts(initial_timeline_gate),
@@ -932,6 +594,8 @@ def repair_final_visible_caption_issues(
         "boundary_restart_repair_actions": boundary_restart_actions,
         "timeline_repair_proposal_action_count": len(timeline_repair_proposal_actions),
         "timeline_repair_proposal_actions": timeline_repair_proposal_actions,
+        "final_timeline_repair_intent_action_count": len(final_timeline_intent_actions),
+        "final_timeline_repair_intent_actions": final_timeline_intent_actions,
         "final_visible_effective_caption_count": len(final_effective_timeline_captions),
         "caption_only_materialized_merge_count": len(final_materializations),
         "caption_only_materialized_merges": final_materializations,
@@ -972,6 +636,32 @@ class _RenderCallbackAdapter:
         _source_graph: CanonicalSourceGraph,
     ) -> list[CaptionRenderUnit]:
         return self._render_captions(final_timeline)
+
+
+def _repair_final_timeline_quality_intent(
+    *,
+    final_timeline: list[FinalTimelineSegment],
+    captions: list[CaptionRenderUnit],
+    source_graph: CanonicalSourceGraph,
+    render_captions: Callable[[list[FinalTimelineSegment]], list[CaptionRenderUnit]],
+    pass_index: int,
+) -> _RepairStep | None:
+    result = apply_next_final_timeline_repair_intent(
+        final_timeline=final_timeline,
+        captions=captions,
+        source_graph=source_graph,
+        render_captions=render_captions,
+        pass_index=pass_index,
+    )
+    if result is None:
+        no_step: _RepairStep | None = None
+        return no_step
+    return _RepairStep(
+        final_timeline=result.final_timeline,
+        captions=result.captions,
+        action=result.action,
+        timeline_changed=result.timeline_changed,
+    )
 
 
 def _repair_boundary_restart_with_proposal(
@@ -1312,6 +1002,41 @@ def _repair_open_tail_short_caption_with_next(
                     target_gap_us=int(next_caption.target_start_us) - int(current.target_end_us),
                 ),
             )
+        merged_caption_result = _merge_adjacent_captions(current, next_caption)
+        if merged_caption_result is None:
+            continue
+        merged_caption, merge_decision = merged_caption_result
+        if not bool(build_final_caption_visible_repeat_gate([merged_caption]).get("gate_passed")):
+            continue
+        repaired = [*ordered[:index], merged_caption, *ordered[index + 2 :]]
+        return _RepairStep(
+            final_timeline=final_timeline,
+            captions=_renumber_captions(repaired),
+            timeline_changed=False,
+            action=_action(
+                "open_tail_short_caption",
+                "caption_only_merge_open_tail_with_next",
+                pass_index,
+                {
+                    "caption_id": current.caption_id,
+                    "related_caption_id": next_caption.caption_id,
+                    "text": current.text,
+                    "related_text": next_caption.text,
+                },
+                affected_caption_ids=[current.caption_id, next_caption.caption_id],
+                target_gap_us=int(next_caption.target_start_us) - int(current.target_end_us),
+                video_segment_merged=False,
+                caption_only_merge_materialized=True,
+                caption_only_merge_decision=merge_decision,
+                merged_into_caption_id=current.caption_id,
+                consumed_caption_id=next_caption.caption_id,
+                consumed_caption_state="consumed_by_open_tail_caption_merge",
+                merged_caption_text=merged_caption.text,
+                merged_caption_timeline_segment_ids=list(merged_caption.timeline_segment_ids),
+                merged_caption_target_start_us=int(merged_caption.target_start_us),
+                merged_caption_target_end_us=int(merged_caption.target_end_us),
+            ),
+        )
     no_step: _RepairStep | None = None
     return no_step
 
@@ -1355,15 +1080,22 @@ def _open_tail_short_caption_should_merge(
     next_text = normalize_text(next_caption.text)
     if not text or not next_text:
         return False
-    if len(text) > OPEN_TAIL_SHORT_CAPTION_MAX_CHARS:
+    current_segments = set(_caption_segment_ids(current))
+    next_segments = set(_caption_segment_ids(next_caption))
+    same_visible_segment = bool(current_segments & next_segments) or (
+        bool(current.containing_video_segment_id)
+        and str(current.containing_video_segment_id) == str(next_caption.containing_video_segment_id or "")
+    )
+    tail = text[-1]
+    short_tail_merge = len(text) <= OPEN_TAIL_SHORT_CAPTION_MAX_CHARS and tail in OPEN_TAIL_SHORT_CAPTION_MERGE_TAILS
+    object_tail_merge = same_visible_segment and tail in OPEN_TAIL_OBJECT_CAPTION_MERGE_TAILS
+    if not short_tail_merge and not object_tail_merge:
         return False
     if text in COMMON_CLOSED_DE_PHRASES:
         return False
     if text.startswith("是") and text.endswith("的"):
         return False
     if next_text.startswith(("的", "的是")):
-        return False
-    if text[-1] not in OPEN_TAIL_SHORT_CAPTION_MERGE_TAILS:
         return False
     gap_us = int(next_caption.target_start_us) - int(current.target_end_us)
     if gap_us < -80_000 or gap_us > OPEN_TAIL_SHORT_CAPTION_MAX_GAP_US:
@@ -1657,6 +1389,104 @@ def _repeated_island_confidence_count(
     confidence: str,
 ) -> int:
     return sum(1 for candidate in candidates if str(candidate.get("confidence") or "") == confidence)
+
+
+def _repair_caption_level_final_repeat_aborted_containment(
+    final_timeline: list[FinalTimelineSegment],
+    captions: list[CaptionRenderUnit],
+    source_graph: CanonicalSourceGraph,
+    pass_index: int,
+) -> _RepairStep | None:
+    repeat_report = build_final_repeat_gate_report({"issues": []}, _final_repeat_caption_rows(captions))
+    for candidate in list(repeat_report.get("final_target_repeat_candidates") or []):
+        if not isinstance(candidate, dict):
+            continue
+        if str(candidate.get("cluster_type") or "") != "semantic_containment_take":
+            continue
+        drop_caption_id = _caption_level_final_repeat_aborted_drop_caption_id(candidate)
+        if not drop_caption_id:
+            continue
+        repair_candidate = dict(candidate)
+        repair_candidate.update(
+            {
+                "caption_id": drop_caption_id,
+                "reason": "caption_level_aborted_semantic_containment",
+                "drop_caption_id": drop_caption_id,
+            }
+        )
+        return _drop_repeated_caption_span(
+            final_timeline,
+            captions,
+            source_graph,
+            repair_candidate,
+            "final_target_repeat_caption_containment",
+            pass_index,
+        )
+    no_step: _RepairStep | None = None
+    return no_step
+
+
+def _final_repeat_caption_rows(captions: list[CaptionRenderUnit]) -> list[dict[str, Any]]:
+    return [
+        {
+            "fragment_id": caption.caption_id,
+            "fragment_text": caption.text,
+            "text": caption.text,
+            "word_ids": list(caption.word_ids),
+            "target_start_us": int(caption.target_start_us),
+            "target_duration_us": max(0, int(caption.target_end_us) - int(caption.target_start_us)),
+            "source_subtitle_uids": list(caption.source_subtitle_uids),
+        }
+        for caption in list(captions or [])
+    ]
+
+
+def _caption_level_final_repeat_aborted_drop_caption_id(candidate: dict[str, Any]) -> str:
+    rows = [row for row in list(candidate.get("candidates") or []) if isinstance(row, dict)]
+    if len(rows) < 2:
+        return ""
+    completed_texts = [
+        normalize_text(str(row.get("text") or row.get("norm_text") or ""))
+        for row in rows
+        if not bool(row.get("is_aborted_start"))
+    ]
+    completed_texts = [text for text in completed_texts if text]
+    if not completed_texts:
+        return ""
+    for row in rows:
+        if not bool(row.get("is_aborted_start")):
+            continue
+        text = normalize_text(str(row.get("text") or row.get("norm_text") or ""))
+        if len(text) < 2:
+            continue
+        if not any(_caption_level_containment_match(text, completed, candidate) for completed in completed_texts):
+            continue
+        caption_ids = [str(value) for value in list(row.get("subtitle_uids") or []) if str(value)]
+        if caption_ids:
+            return caption_ids[0]
+    return ""
+
+
+def _caption_level_containment_match(short_text: str, completed_text: str, candidate: dict[str, Any]) -> bool:
+    if not short_text or not completed_text or short_text == completed_text:
+        return False
+    if short_text in completed_text:
+        return True
+    relaxed_short = _relaxed_containment_text(short_text)
+    relaxed_completed = _relaxed_containment_text(completed_text)
+    if relaxed_short and relaxed_short != relaxed_completed and relaxed_short in relaxed_completed:
+        return True
+    return any(
+        isinstance(row, dict)
+        and str(row.get("cluster_type") or "") == "semantic_containment_take"
+        and float(row.get("containment") or 0.0) >= 1.0
+        and float(row.get("similarity") or 0.0) >= 0.5
+        for row in list(candidate.get("pairwise_evidence") or [])
+    )
+
+
+def _relaxed_containment_text(text: str) -> str:
+    return "".join(char for char in normalize_text(text) if char not in {"的", "地", "得"})
 
 
 def _repair_next_issue(
@@ -1964,355 +1794,6 @@ def _repair_dangling_prefix_suffix(
     )
 
 
-def _caption_ids_with_dangling_boundary_candidates(captions: list[CaptionRenderUnit]) -> set[str]:
-    gate = build_final_caption_visible_repeat_gate(captions)
-    ids: set[str] = set()
-    for candidate in list(gate.get("dangling_prefix_suffix_candidates") or []):
-        for key in ("caption_id", "related_caption_id"):
-            value = str(candidate.get(key) or "")
-            if value:
-                ids.add(value)
-        for value in list(candidate.get("affected_caption_ids") or []):
-            if value:
-                ids.add(str(value))
-    return ids
-
-
-def _safe_merge_segments(left: FinalTimelineSegment, right: FinalTimelineSegment, source_graph: CanonicalSourceGraph) -> bool:
-    if str(left.source_material_id or "") and str(right.source_material_id or "") and str(left.source_material_id) != str(right.source_material_id):
-        return False
-    if str(left.source_segment_id or "") and str(right.source_segment_id or "") and str(left.source_segment_id) != str(right.source_segment_id):
-        return False
-    if int(left.target_end_us) <= int(left.target_start_us) or int(right.target_end_us) <= int(right.target_start_us):
-        return False
-    if int(right.target_start_us) < int(left.target_start_us):
-        return False
-    source_gap_us = int(right.source_start_us) - int(left.source_end_us)
-    if not -80_000 <= source_gap_us <= 1_500_000:
-        return False
-    return not _source_gap_has_unselected_words(left, right, source_graph)
-
-
-def _source_gap_has_unselected_words(
-    left: FinalTimelineSegment,
-    right: FinalTimelineSegment,
-    source_graph: CanonicalSourceGraph,
-) -> bool:
-    return _source_range_has_unselected_words(
-        source_graph=source_graph,
-        start_us=int(left.source_end_us),
-        end_us=int(right.source_start_us),
-        selected_word_ids=set(left.word_ids) | set(right.word_ids),
-    )
-
-
-def _caption_source_range(
-    caption: CaptionRenderUnit,
-    source_graph: CanonicalSourceGraph,
-) -> tuple[int, int] | None:
-    words_by_id = {word.word_id: word for word in source_graph.words}
-    words = [words_by_id[word_id] for word_id in caption.word_ids if word_id in words_by_id]
-    if not words or len(words) != len(caption.word_ids):
-        no_range: tuple[int, int] | None = None
-        return no_range
-    start_us = min(int(getattr(word, "source_start_us", 0) or 0) for word in words)
-    end_us = max(int(getattr(word, "source_end_us", 0) or 0) for word in words)
-    if end_us <= start_us:
-        no_range: tuple[int, int] | None = None
-        return no_range
-    return start_us, end_us
-
-
-def _segment_with_word_ids(
-    segment: FinalTimelineSegment,
-    word_ids: list[str],
-    source_graph: CanonicalSourceGraph,
-) -> FinalTimelineSegment | None:
-    words_by_id = {word.word_id: word for word in source_graph.words}
-    words = [words_by_id[word_id] for word_id in word_ids if word_id in words_by_id]
-    if len(words) != len(word_ids):
-        no_segment: FinalTimelineSegment | None = None
-        return no_segment
-    source_start_us = min(int(word.source_start_us) for word in words)
-    source_end_us = max(int(word.source_end_us) for word in words)
-    duration_us = max(0, source_end_us - source_start_us)
-    if duration_us <= 0:
-        no_segment: FinalTimelineSegment | None = None
-        return no_segment
-    return replace(
-        segment,
-        source_start_us=source_start_us,
-        source_end_us=source_end_us,
-        target_end_us=int(segment.target_start_us) + duration_us,
-        word_ids=list(word_ids),
-        text="".join(word.text for word in words),
-        spoken_source_start_us=source_start_us,
-        spoken_source_end_us=source_end_us,
-        clip_source_start_us=source_start_us if segment.clip_source_start_us is not None else segment.clip_source_start_us,
-        clip_source_end_us=source_end_us if segment.clip_source_end_us is not None else segment.clip_source_end_us,
-        debug_hints={**dict(segment.debug_hints or {}), "final_visible_repair": "trim_repeated_caption_words"},
-    )
-
-
-def _segment_with_word_ids_preserving_effective_speed(
-    segment: FinalTimelineSegment,
-    word_ids: list[str],
-    source_graph: CanonicalSourceGraph,
-    repair_reason: str,
-) -> FinalTimelineSegment | None:
-    words_by_id = {word.word_id: word for word in source_graph.words}
-    words = [words_by_id[word_id] for word_id in word_ids if word_id in words_by_id]
-    if len(words) != len(word_ids):
-        no_segment: FinalTimelineSegment | None = None
-        return no_segment
-    source_start_us = min(int(word.source_start_us) for word in words)
-    source_end_us = max(int(word.source_end_us) for word in words)
-    if source_end_us <= source_start_us:
-        no_segment: FinalTimelineSegment | None = None
-        return no_segment
-    target_duration_us = _target_duration_preserving_effective_speed(segment, source_start_us, source_end_us)
-    return replace(
-        segment,
-        source_start_us=source_start_us,
-        source_end_us=source_end_us,
-        target_end_us=int(segment.target_start_us) + target_duration_us,
-        word_ids=list(word_ids),
-        text="".join(word.text for word in words),
-        spoken_source_start_us=source_start_us,
-        spoken_source_end_us=source_end_us,
-        clip_source_start_us=source_start_us if segment.clip_source_start_us is not None else segment.clip_source_start_us,
-        clip_source_end_us=source_end_us if segment.clip_source_end_us is not None else segment.clip_source_end_us,
-        debug_hints={**dict(segment.debug_hints or {}), "final_visible_repair": repair_reason},
-    )
-
-
-def _segments_with_word_ids_preserving_effective_speed(
-    segment: FinalTimelineSegment,
-    word_ids: list[str],
-    source_graph: CanonicalSourceGraph,
-    repair_reason: str,
-    *,
-    existing_segment_ids: set[str],
-) -> list[FinalTimelineSegment] | None:
-    word_runs = _split_word_ids_on_unselected_source_words(word_ids, source_graph)
-    if not word_runs:
-        no_segments: list[FinalTimelineSegment] | None = None
-        return no_segments
-    if len(word_runs) == 1:
-        repaired = _segment_with_word_ids_preserving_effective_speed(segment, word_runs[0], source_graph, repair_reason)
-        if repaired is None:
-            no_segments: list[FinalTimelineSegment] | None = None
-            return no_segments
-        return [repaired]
-    repaired_segments: list[FinalTimelineSegment] = []
-    used_ids = set(existing_segment_ids)
-    for index, run_word_ids in enumerate(word_runs):
-        base = segment if index == 0 else replace(segment, segment_id=_unique_split_segment_id(segment.segment_id, used_ids))
-        used_ids.add(base.segment_id)
-        repaired = _segment_with_word_ids_preserving_effective_speed(base, run_word_ids, source_graph, repair_reason)
-        if repaired is None:
-            no_segments: list[FinalTimelineSegment] | None = None
-            return no_segments
-        repaired_segments.append(repaired)
-    return repaired_segments
-
-
-def _split_word_ids_on_unselected_source_words(
-    word_ids: list[str],
-    source_graph: CanonicalSourceGraph,
-) -> list[list[str]]:
-    words_by_id = {word.word_id: word for word in source_graph.words}
-    words = [words_by_id[word_id] for word_id in word_ids if word_id in words_by_id]
-    if len(words) != len(word_ids):
-        empty: list[list[str]] = []
-        return empty
-    selected_ids = set(word_ids)
-    runs: list[list[str]] = []
-    current: list[str] = []
-    previous_word: Any | None = None
-    for word in words:
-        if previous_word is not None and _source_gap_has_unselected_words_between_words(
-            previous_word,
-            word,
-            source_graph,
-            selected_ids,
-        ):
-            if current:
-                runs.append(current)
-            current = []
-        current.append(str(word.word_id))
-        previous_word = word
-    if current:
-        runs.append(current)
-    return runs
-
-
-def _source_gap_has_unselected_words_between_words(
-    left_word: Any,
-    right_word: Any,
-    source_graph: CanonicalSourceGraph,
-    selected_word_ids: set[str],
-) -> bool:
-    return _source_range_has_unselected_words(
-        source_graph=source_graph,
-        start_us=int(getattr(left_word, "source_end_us", 0) or 0),
-        end_us=int(getattr(right_word, "source_start_us", 0) or 0),
-        selected_word_ids=selected_word_ids,
-    )
-
-
-def _source_range_has_unselected_words(
-    *,
-    source_graph: CanonicalSourceGraph,
-    start_us: int,
-    end_us: int,
-    selected_word_ids: set[str],
-) -> bool:
-    if int(end_us) <= int(start_us):
-        return False
-    for word in source_graph.words:
-        word_id = str(getattr(word, "word_id", "") or "")
-        if not word_id or word_id in selected_word_ids:
-            continue
-        word_start_us = int(getattr(word, "source_start_us", 0) or 0)
-        word_end_us = int(getattr(word, "source_end_us", 0) or 0)
-        if word_end_us <= int(start_us) + 20_000 or word_start_us >= int(end_us) - 20_000:
-            continue
-        return True
-    return False
-
-
-def _source_bounds_for_word_ids(
-    word_ids: list[str],
-    source_graph: CanonicalSourceGraph,
-) -> tuple[int, int] | None:
-    words_by_id = {word.word_id: word for word in source_graph.words}
-    words = [words_by_id[word_id] for word_id in word_ids if word_id in words_by_id]
-    if not words or len(words) != len(word_ids):
-        no_bounds: tuple[int, int] | None = None
-        return no_bounds
-    source_start_us = min(int(word.source_start_us) for word in words)
-    source_end_us = max(int(word.source_end_us) for word in words)
-    if source_end_us <= source_start_us:
-        no_bounds: tuple[int, int] | None = None
-        return no_bounds
-    return source_start_us, source_end_us
-
-
-def _merged_segment_pair_preserving_effective_speed(
-    left: FinalTimelineSegment,
-    right: FinalTimelineSegment,
-    source_graph: CanonicalSourceGraph,
-    repair_reason: str,
-) -> FinalTimelineSegment:
-    merged_word_ids = [*left.word_ids, *right.word_ids]
-    text = _text_from_word_ids(merged_word_ids, source_graph) or f"{left.text}{right.text}"
-    bounds = _source_bounds_for_word_ids(merged_word_ids, source_graph)
-    if bounds is None:
-        source_start_us = int(left.source_start_us)
-        source_end_us = int(right.source_end_us)
-    else:
-        source_start_us, source_end_us = bounds
-    target_duration_us = _target_duration_preserving_effective_speed(left, source_start_us, source_end_us)
-    has_clip_bounds = any(
-        value is not None
-        for value in (
-            left.clip_source_start_us,
-            left.clip_source_end_us,
-            right.clip_source_start_us,
-            right.clip_source_end_us,
-        )
-    )
-    clip_start_us = None
-    clip_end_us = None
-    if has_clip_bounds:
-        clip_start_values = [
-            int(value)
-            for value in (left.clip_source_start_us, right.clip_source_start_us, source_start_us)
-            if value is not None
-        ]
-        clip_end_values = [
-            int(value)
-            for value in (left.clip_source_end_us, right.clip_source_end_us, source_end_us)
-            if value is not None
-        ]
-        clip_start_us = min(clip_start_values) if clip_start_values else source_start_us
-        clip_end_us = max(clip_end_values) if clip_end_values else source_end_us
-    return replace(
-        left,
-        source_start_us=source_start_us,
-        source_end_us=source_end_us,
-        target_end_us=int(left.target_start_us) + target_duration_us,
-        word_ids=merged_word_ids,
-        text=text,
-        decision_ids=_unique([*left.decision_ids, *right.decision_ids]),
-        spoken_source_start_us=source_start_us,
-        spoken_source_end_us=source_end_us,
-        clip_source_start_us=clip_start_us,
-        clip_source_end_us=clip_end_us,
-        tail_handle_us=max(int(left.tail_handle_us), int(right.tail_handle_us)),
-        debug_hints={
-            **dict(left.debug_hints or {}),
-            "final_visible_repair": repair_reason,
-            "merged_segment_ids": [left.segment_id, right.segment_id],
-        },
-    )
-
-
-def _target_duration_preserving_effective_speed(
-    segment: FinalTimelineSegment,
-    source_start_us: int,
-    source_end_us: int,
-) -> int:
-    new_source_duration_us = max(1, int(source_end_us) - int(source_start_us))
-    return new_source_duration_us
-
-
-def _candidate_window_captions(
-    captions: list[CaptionRenderUnit],
-    candidate: dict[str, Any],
-) -> list[CaptionRenderUnit]:
-    ordered = _ordered_captions(captions)
-    ids = [str(value) for value in list(candidate.get("window_caption_ids") or []) if str(value)]
-    if ids:
-        by_id = {caption.caption_id: caption for caption in ordered}
-        rows = [by_id[caption_id] for caption_id in ids if caption_id in by_id]
-        if len(rows) == len(ids):
-            return rows
-    caption_id = str(candidate.get("caption_id") or "")
-    related_caption_id = str(candidate.get("related_caption_id") or caption_id)
-    start = _caption_index(ordered, caption_id)
-    end = _caption_index(ordered, related_caption_id)
-    if start is None or end is None:
-        empty: list[CaptionRenderUnit] = []
-        return empty
-    if end < start:
-        start, end = end, start
-    return ordered[start : end + 1]
-
-
-def _unique_split_segment_id(base_segment_id: str, existing_segment_ids: set[str]) -> str:
-    for index in range(1, 1000):
-        candidate = f"{base_segment_id}_split_{index:03d}"
-        if candidate not in existing_segment_ids:
-            return candidate
-    return f"{base_segment_id}_split"
-
-
-def _caption_segments_exclusive(
-    caption: CaptionRenderUnit,
-    captions: list[CaptionRenderUnit],
-    segment_ids: list[str],
-) -> bool:
-    target = set(segment_ids)
-    for other in captions:
-        if other.caption_id == caption.caption_id:
-            continue
-        if target.intersection(_caption_segment_ids(other)):
-            return False
-    return True
-
-
 def _timeline_caption_units(
     final_timeline: list[FinalTimelineSegment],
     source_graph: CanonicalSourceGraph,
@@ -2399,18 +1880,6 @@ def _repair_state_signature(
         caption_segment_ids=_caption_segment_ids,
     )
 
-def _configure_final_visible_rule_modules() -> None:
-    dependencies = globals()
-    _leading_filler_rules.configure_rule_dependencies(dependencies)
-    _connector_intrusion_rules.configure_rule_dependencies(dependencies)
-    _pre_visible_semantic_junk_rules.configure_rule_dependencies(dependencies)
-    _source_boundary_prefix_rules.configure_rule_dependencies(dependencies)
-    _caption_only_merge_rules.configure_rule_dependencies(dependencies)
-    _short_residual_rules.configure_rule_dependencies(dependencies)
-    _restart_repeat_rules.configure_rule_dependencies(dependencies)
-    _de_shi_bridge_rules.configure_rule_dependencies(dependencies)
-    _word_span_edit_rules.configure_rule_dependencies(dependencies)
-
 LEADING_FILLER_WORDS = _leading_filler_rules.LEADING_FILLER_WORDS
 MIN_LEADING_FILLER_GAP_US = _leading_filler_rules.MIN_LEADING_FILLER_GAP_US
 MAX_LEADING_FILLER_DURATION_US = _leading_filler_rules.MAX_LEADING_FILLER_DURATION_US
@@ -2479,6 +1948,8 @@ _caption_only_window_gaps_are_safe = _caption_only_merge_rules._caption_only_win
 _visible_target_range_covers_materialization = _caption_only_merge_rules._visible_target_range_covers_materialization
 _caption_only_replacements = _caption_only_merge_rules._caption_only_replacements
 _caption_only_state_signature = _caption_only_merge_rules._caption_only_state_signature
+_caption_ids_with_dangling_boundary_candidates = _pre_visible_semantic_junk_rules._caption_ids_with_dangling_boundary_candidates
+_caption_source_range = _pre_visible_semantic_junk_rules._caption_source_range
 _merge_short_repaired_segments = _short_residual_rules._merge_short_repaired_segments
 _repair_short_repair_residual_segments = _short_residual_rules._repair_short_repair_residual_segments
 _cleanup_short_repair_residual_segments = _short_residual_rules._cleanup_short_repair_residual_segments
@@ -2493,6 +1964,7 @@ _repair_dangling_pronoun_modal_suffix = _restart_repeat_rules._repair_dangling_p
 _trim_asr_restart_prefix = _restart_repeat_rules._trim_asr_restart_prefix
 _trim_restart_repeat_visible_prefix = _restart_repeat_rules._trim_restart_repeat_visible_prefix
 _drop_restart_repeat_word_span = _restart_repeat_rules._drop_restart_repeat_word_span
+_candidate_window_captions = _restart_repeat_rules._candidate_window_captions
 _partial_previous_tail_match = _restart_repeat_rules._partial_previous_tail_match
 _partial_tail_visible_text_match = _restart_repeat_rules._partial_tail_visible_text_match
 _repair_de_shi_duplicate_bridge = _de_shi_bridge_rules._repair_de_shi_duplicate_bridge
@@ -2504,5 +1976,14 @@ _contains_contiguous_subsequence = _word_span_edit_rules._contains_contiguous_su
 _leading_word_ids_for_text = _word_span_edit_rules._leading_word_ids_for_text
 _trailing_word_ids_for_text = _word_span_edit_rules._trailing_word_ids_for_text
 _contiguous_word_ids_for_text = _word_span_edit_rules._contiguous_word_ids_for_text
-
-_configure_final_visible_rule_modules()
+_segment_with_word_ids = _word_span_edit_rules._segment_with_word_ids
+_segment_with_word_ids_preserving_effective_speed = _word_span_edit_rules._segment_with_word_ids_preserving_effective_speed
+_segments_with_word_ids_preserving_effective_speed = _word_span_edit_rules._segments_with_word_ids_preserving_effective_speed
+_source_range_has_unselected_words = _word_span_edit_rules._source_range_has_unselected_words
+_source_bounds_for_word_ids = _word_span_edit_rules._source_bounds_for_word_ids
+_merged_segment_pair_preserving_effective_speed = _word_span_edit_rules._merged_segment_pair_preserving_effective_speed
+_target_duration_preserving_effective_speed = _word_span_edit_rules._target_duration_preserving_effective_speed
+_unique_split_segment_id = _word_span_edit_rules._unique_split_segment_id
+_caption_segments_exclusive = _word_span_edit_rules._caption_segments_exclusive
+_safe_merge_segments = _word_span_edit_rules._safe_merge_segments
+_source_gap_has_unselected_words = _word_span_edit_rules._source_gap_has_unselected_words

@@ -7,16 +7,15 @@ from typing import Any
 from aroll_adjacent_modifier_semantic_redundancy_gate import detect_adjacent_modifier_semantic_redundancy
 from aroll_text_normalize import normalize_text
 from aroll_v21.ir.models import CaptionRenderUnit
-from aroll_v21.quality.final_visible_repeat_classification import (
-    allowed_repeat_candidates as _allowed_repeat_candidates,
-    blocking_repeat_candidates as _blocking_repeat_candidates,
-    classify_final_visible_repeat_candidates,
-    warning_repeat_candidates as _warning_repeat_candidates,
+from aroll_v21.quality.final_caption_visible import (
+    FinalCaptionVisibleDetectorSet,
+    build_final_caption_visible_gate_report,
+    build_final_caption_visible_policy,
+    build_final_caption_visible_repair_signal,
+    classify_final_caption_visible_evidence,
+    detect_final_caption_visible_evidence,
 )
-from aroll_v21.quality.final_semantic_integrity import (
-    build_final_semantic_integrity_candidates,
-    semantic_integrity_reason_counts,
-)
+from aroll_v21.quality.final_semantic_integrity import build_final_semantic_integrity_candidates
 from aroll_v21.quality.boundary_overlap import (
     is_explanatory_term_reuse,
     is_semantic_label_reuse_boundary,
@@ -108,121 +107,47 @@ FINAL_VISIBLE_RECHECK_DECISIONS = [
 
 
 def build_final_caption_visible_repeat_gate(captions: list[CaptionRenderUnit]) -> dict[str, Any]:
-    ordered = sorted(captions, key=lambda row: (int(row.target_start_us), int(row.target_end_us), str(row.caption_id)))
-    raw_containment_candidates = _containment_candidates(ordered)
-    containment_pairs = _candidate_pairs(raw_containment_candidates)
-    raw_prefix_suffix_candidates = _prefix_suffix_candidates(ordered, containment_pairs)
-    excluded_pairs = _candidate_pairs([*raw_containment_candidates, *raw_prefix_suffix_candidates])
-    raw_ngram_candidates = _ngram_candidates(ordered, excluded_pairs)
-    raw_near_duplicate_candidates = _near_duplicate_candidates(ordered, raw_containment_candidates, raw_prefix_suffix_candidates)
-    modifier_redundancy_candidates = _modifier_redundancy_candidates(ordered)
-    self_repair_candidates = _self_repair_aborted_phrase_candidates(ordered)
-    dangling_candidates = _dangling_prefix_suffix_candidates(ordered)
-    semantic_suspect_candidates = _semantic_garbage_or_asr_suspect_candidates(ordered)
-    semantic_integrity_candidates = build_final_semantic_integrity_candidates(ordered)
-    raw_cross_caption_containment_candidates = _cross_caption_semantic_containment_candidates(ordered)
-    raw_restart_repeat_candidates = [
-        *_restart_repeat_visible_candidates(ordered),
-        *_repeated_discourse_opener_candidates(ordered),
-        *_negative_predicate_restart_candidates(ordered),
-        *_partial_phrase_restart_candidates(ordered),
-        *_short_fragment_restart_candidates(ordered),
-    ]
-    classified_repeat_candidates = classify_final_visible_repeat_candidates(
-        ordered,
-        [
-            *raw_containment_candidates,
-            *raw_prefix_suffix_candidates,
-            *raw_ngram_candidates,
-            *raw_near_duplicate_candidates,
-            *raw_cross_caption_containment_candidates,
-            *raw_restart_repeat_candidates,
-        ],
+    evidence = detect_final_caption_visible_evidence(captions, _final_caption_visible_detector_set())
+    classification = classify_final_caption_visible_evidence(evidence)
+    policy_decisions = build_final_caption_visible_policy(evidence, classification)
+    repair_signal = build_final_caption_visible_repair_signal(policy_decisions)
+    return build_final_caption_visible_gate_report(
+        evidence=evidence,
+        classification=classification,
+        policy_decisions=policy_decisions,
+        repair_signal=repair_signal,
+        ngram_size=NGRAM_SIZE,
+        prefix_suffix_min_overlap=PREFIX_SUFFIX_MIN_OVERLAP,
+        near_duplicate_ratio=NEAR_DUPLICATE_RATIO,
+        final_visible_recheck_decisions=FINAL_VISIBLE_RECHECK_DECISIONS,
     )
-    repeat_warning_candidates = _warning_repeat_candidates(classified_repeat_candidates)
-    repeat_allowed_candidates = _allowed_repeat_candidates(classified_repeat_candidates)
-    visible_repeat_candidates = _blocking_repeat_candidates(classified_repeat_candidates)
-    containment_candidates = _candidates_by_reason(visible_repeat_candidates, "containment_repeat")
-    prefix_suffix_candidates = _candidates_by_reason(visible_repeat_candidates, "prefix_suffix_overlap")
-    ngram_candidates = _candidates_by_reason(visible_repeat_candidates, "ngram_repeat")
-    near_duplicate_candidates = _candidates_by_reason(visible_repeat_candidates, "near_duplicate_visible_caption")
-    cross_caption_containment_candidates = _candidates_by_reason(
-        visible_repeat_candidates,
-        "cross_caption_semantic_containment",
+
+
+def _final_caption_visible_detector_set() -> FinalCaptionVisibleDetectorSet:
+    return FinalCaptionVisibleDetectorSet(
+        containment_candidates=_containment_candidates,
+        candidate_pairs=_candidate_pairs,
+        prefix_suffix_candidates=_prefix_suffix_candidates,
+        ngram_candidates=_ngram_candidates,
+        near_duplicate_candidates=_near_duplicate_candidates,
+        modifier_redundancy_candidates=_modifier_redundancy_candidates,
+        self_repair_candidates=_self_repair_aborted_phrase_candidates,
+        dangling_candidates=_dangling_prefix_suffix_candidates,
+        semantic_suspect_candidates=_semantic_garbage_or_asr_suspect_candidates,
+        semantic_integrity_candidates=build_final_semantic_integrity_candidates,
+        cross_caption_containment_candidates=_cross_caption_semantic_containment_candidates,
+        restart_repeat_candidates=_raw_restart_repeat_candidates,
     )
-    restart_repeat_reasons = {str(candidate.get("reason") or "") for candidate in raw_restart_repeat_candidates}
-    restart_repeat_candidates = [
-        candidate
-        for candidate in visible_repeat_candidates
-        if str(candidate.get("reason") or "") in restart_repeat_reasons
+
+
+def _raw_restart_repeat_candidates(captions: list[CaptionRenderUnit]) -> list[dict[str, Any]]:
+    return [
+        *_restart_repeat_visible_candidates(captions),
+        *_repeated_discourse_opener_candidates(captions),
+        *_negative_predicate_restart_candidates(captions),
+        *_partial_phrase_restart_candidates(captions),
+        *_short_fragment_restart_candidates(captions),
     ]
-    final_visible_quality_candidates = [
-        *visible_repeat_candidates,
-        *dangling_candidates,
-        *semantic_suspect_candidates,
-        *semantic_integrity_candidates,
-    ]
-    blocker_codes: list[str] = []
-    if final_visible_quality_candidates:
-        blocker_codes.append("V21_FINAL_CAPTION_VISIBLE_REPEAT_GATE_FAILED")
-    if dangling_candidates:
-        blocker_codes.append("V21_FINAL_VISIBLE_DANGLING_PREFIX_SUFFIX")
-    if semantic_suspect_candidates:
-        blocker_codes.append("V21_FINAL_VISIBLE_SEMANTIC_GARBAGE_OR_ASR_SUSPECT")
-    if semantic_integrity_candidates:
-        blocker_codes.append("V21_FINAL_SEMANTIC_INTEGRITY_GATE_FAILED")
-    if cross_caption_containment_candidates:
-        blocker_codes.append("V21_FINAL_VISIBLE_CROSS_CAPTION_SEMANTIC_CONTAINMENT")
-    if restart_repeat_candidates:
-        blocker_codes.append("V21_FINAL_VISIBLE_RESTART_REPEAT")
-    if modifier_redundancy_candidates:
-        blocker_codes.append("V21_FATAL_MODIFIER_REDUNDANCY_UNRESOLVED")
-    if self_repair_candidates:
-        blocker_codes.append("V21_SELF_REPAIR_ABORTED_PHRASE_UNRESOLVED")
-    return {
-        "gate_passed": not blocker_codes,
-        "blocker_codes": blocker_codes,
-        "visible_repeat_candidate_count": len(visible_repeat_candidates),
-        "visible_repeat_fatal_candidate_count": len(visible_repeat_candidates),
-        "visible_repeat_warning_candidate_count": len(repeat_warning_candidates),
-        "visible_repeat_allow_candidate_count": len(repeat_allowed_candidates),
-        "repeat_classification_candidate_count": len(classified_repeat_candidates),
-        "repeat_classification_candidates": classified_repeat_candidates,
-        "visible_repeat_warning_candidates": repeat_warning_candidates,
-        "visible_repeat_allow_candidates": repeat_allowed_candidates,
-        "containment_repeat_count": len(containment_candidates),
-        "containment_repeat_raw_count": len(raw_containment_candidates),
-        "prefix_suffix_overlap_count": len(prefix_suffix_candidates),
-        "ngram_repeat_count": len(ngram_candidates),
-        "ngram_repeat_raw_count": len(raw_ngram_candidates),
-        "near_duplicate_visible_caption_count": len(near_duplicate_candidates),
-        "modifier_redundancy_residual_count": len(modifier_redundancy_candidates),
-        "self_repair_aborted_phrase_count": len(self_repair_candidates),
-        "dangling_prefix_suffix_count": len(dangling_candidates),
-        "semantic_garbage_or_asr_suspect_count": len(semantic_suspect_candidates),
-        "semantic_integrity_count": len(semantic_integrity_candidates),
-        "semantic_integrity_reason_counts": semantic_integrity_reason_counts(semantic_integrity_candidates),
-        "cross_caption_semantic_containment_count": len(cross_caption_containment_candidates),
-        "cross_caption_semantic_containment_raw_count": len(raw_cross_caption_containment_candidates),
-        "restart_repeat_visible_count": len(restart_repeat_candidates),
-        "visible_repeat_candidates": visible_repeat_candidates,
-        "containment_repeat_candidates": containment_candidates,
-        "prefix_suffix_overlap_candidates": prefix_suffix_candidates,
-        "ngram_repeat_candidates": ngram_candidates,
-        "near_duplicate_visible_caption_candidates": near_duplicate_candidates,
-        "modifier_redundancy_residual_candidates": modifier_redundancy_candidates,
-        "self_repair_aborted_phrase_candidates": self_repair_candidates,
-        "dangling_prefix_suffix_candidates": dangling_candidates,
-        "semantic_garbage_or_asr_suspect_candidates": semantic_suspect_candidates,
-        "semantic_integrity_candidates": semantic_integrity_candidates,
-        "cross_caption_semantic_containment_candidates": cross_caption_containment_candidates,
-        "restart_repeat_visible_candidates": restart_repeat_candidates,
-        "final_caption_visible_repeat_gate_enabled": True,
-        "ngram_size": NGRAM_SIZE,
-        "prefix_suffix_min_overlap": PREFIX_SUFFIX_MIN_OVERLAP,
-        "near_duplicate_ratio": NEAR_DUPLICATE_RATIO,
-        "final_visible_recheck_allowed_decisions": FINAL_VISIBLE_RECHECK_DECISIONS,
-    }
 
 
 def _containment_candidates(captions: list[CaptionRenderUnit]) -> list[dict[str, Any]]:
