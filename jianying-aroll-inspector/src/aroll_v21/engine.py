@@ -34,7 +34,18 @@ from aroll_v21.decision.semantic_contracts import (
 from aroll_v21 import engine_validation as engine_validation_helpers
 from aroll_v21.engine_artifacts import write_run_artifacts
 from aroll_v21.engine_report_compaction import _compact_runtime_report_payload, _resolved_semantic_decision_rows
+from aroll_v21.engine_report_builder import build_engine_run_report
 from aroll_v21.engine_summary import build_run_summary, _normalize_effective_speed_prewrite_placeholder
+from aroll_v21.engine_stages import (
+    EngineCompileStageResult as _CompileStageResult,
+    EngineDecisionStageResult as _DecisionStageResult,
+    EngineIngestStageResult as _IngestStageResult,
+    EngineQualityStageResult as _QualityStageResult,
+    EngineValidationStageResult as _ValidationStageResult,
+    EngineWriterStageResult as _WriterStageResult,
+    run_engine_stages,
+)
+from aroll_v21.engine_validation_coordinator import run_engine_validation_stage
 from aroll_v21.evidence import CandidateEvidenceBuilder
 from aroll_v21.ingest import DraftIngest
 from aroll_v21.ir.models import Blocker, BlockerReport, RunReport
@@ -104,47 +115,6 @@ class ArollRunInput:
     mode: Literal["dry-run", "write", "verify-only"] = "dry-run"
 
 
-@dataclass(frozen=True)
-class _IngestStageResult:
-    source_graph: Any
-    blockers: list[Blocker]
-    blocked_report: RunReport | None = None
-
-
-@dataclass(frozen=True)
-class _DecisionStageResult:
-    repeat_clusters: Any
-    decision_plan: Any
-    blocked_report: RunReport | None = None
-
-
-@dataclass(frozen=True)
-class _CompileStageResult:
-    final_timeline: list[Any]
-    blocked_report: RunReport | None = None
-
-
-@dataclass(frozen=True)
-class _QualityStageResult:
-    final_timeline: list[Any]
-    captions: list[Any]
-    visual_pacing_report: dict[str, Any]
-    final_visible_repair_report: dict[str, Any]
-    quality_mutations: list[dict[str, Any]]
-
-
-@dataclass(frozen=True)
-class _WriterStageResult:
-    material_write_plan: dict[str, Any]
-    blocked_report: RunReport | None = None
-
-
-@dataclass(frozen=True)
-class _ValidationStageResult:
-    validator_report: dict[str, Any]
-    validator_blockers: list[Blocker]
-
-
 class ArollEngine:
     def __init__(
         self,
@@ -176,62 +146,7 @@ class ArollEngine:
         self.visual_pacing = visual_pacing or VisualPacingNormalizer()
 
     def run(self, inputs: ArollRunInput) -> RunReport:
-        ingest_stage = self._run_ingest_stage(inputs)
-        if ingest_stage.blocked_report is not None:
-            return ingest_stage.blocked_report
-
-        source_graph = ingest_stage.source_graph
-        blockers = ingest_stage.blockers
-        decision_stage = self._run_decision_stage(source_graph, blockers)
-        if decision_stage.blocked_report is not None:
-            return decision_stage.blocked_report
-
-        repeat_clusters = decision_stage.repeat_clusters
-        decision_plan = decision_stage.decision_plan
-        compile_stage = self._run_compile_stage(source_graph, repeat_clusters, decision_plan, blockers)
-        if compile_stage.blocked_report is not None:
-            return compile_stage.blocked_report
-
-        quality_stage = self._run_quality_stage(
-            final_timeline=compile_stage.final_timeline,
-            source_graph=source_graph,
-            decision_plan=decision_plan,
-            blockers=blockers,
-        )
-        writer_stage = self._run_writer_stage(
-            source_graph=source_graph,
-            repeat_clusters=repeat_clusters,
-            decision_plan=decision_plan,
-            final_timeline=quality_stage.final_timeline,
-            captions=quality_stage.captions,
-            blockers=blockers,
-        )
-        if writer_stage.blocked_report is not None:
-            return writer_stage.blocked_report
-
-        validation_stage = self._run_validation_stage(
-            inputs=inputs,
-            source_graph=source_graph,
-            decision_plan=decision_plan,
-            final_timeline=quality_stage.final_timeline,
-            captions=quality_stage.captions,
-            material_write_plan=writer_stage.material_write_plan,
-            visual_pacing_report=quality_stage.visual_pacing_report,
-            final_visible_repair_report=quality_stage.final_visible_repair_report,
-            blockers=blockers,
-        )
-        return self._build_final_run_report(
-            inputs=inputs,
-            source_graph=source_graph,
-            repeat_clusters=repeat_clusters,
-            decision_plan=decision_plan,
-            final_timeline=quality_stage.final_timeline,
-            captions=quality_stage.captions,
-            material_write_plan=writer_stage.material_write_plan,
-            validator_report=validation_stage.validator_report,
-            validator_blockers=validation_stage.validator_blockers,
-            blockers=blockers,
-        )
+        return run_engine_stages(self, inputs)
 
     def _run_ingest_stage(self, inputs: ArollRunInput) -> _IngestStageResult:
         source_graph = self.ingest.build_source_graph(
@@ -380,33 +295,18 @@ class ArollEngine:
         final_visible_repair_report: dict[str, Any],
         blockers: list[Blocker],
     ) -> _ValidationStageResult:
-        validator_report = self.validators.run(
+        return run_engine_validation_stage(
+            self,
+            inputs=inputs,
             source_graph=source_graph,
             decision_plan=decision_plan,
             final_timeline=final_timeline,
             captions=captions,
             material_write_plan=material_write_plan,
             visual_pacing_report=visual_pacing_report,
-            postwrite_materials=inputs.postwrite_materials,
-            postwrite_mode=inputs.postwrite_mode,
+            final_visible_repair_report=final_visible_repair_report,
+            blockers=blockers,
         )
-        validator_report["final_visible_caption_repair_report"] = final_visible_repair_report
-        validator_report = self._attach_final_caption_visible_repeat_gate(validator_report, captions)
-        final_visible_semantic_changed = self._merge_final_visible_repeat_semantic_requests(decision_plan, validator_report)
-        if self._route_final_visible_repeat_semantic_requests(decision_plan):
-            final_visible_semantic_changed = True
-        if final_visible_semantic_changed:
-            self._refresh_semantic_adjudication_report(decision_plan)
-            self._refresh_validator_semantic_gate_after_request_merge(validator_report, decision_plan)
-        consistency_blockers = self._semantic_request_consistency_blockers(decision_plan, validator_report)
-        if consistency_blockers:
-            blockers.extend(consistency_blockers)
-            decision_plan.blockers.extend(consistency_blockers)
-        validator_blockers: list[Blocker] = []
-        if not validator_report.get("validator_report_ok"):
-            validator_blockers = self._validator_blockers(validator_report)
-            blockers.extend(validator_blockers)
-        return _ValidationStageResult(validator_report=validator_report, validator_blockers=validator_blockers)
 
     def _build_final_run_report(
         self,
@@ -422,74 +322,8 @@ class ArollEngine:
         validator_blockers: list[Blocker],
         blockers: list[Blocker],
     ) -> RunReport:
-        blocking_blockers = [blocker for blocker in blockers if blocker.severity == "fatal" or (inputs.mode == "write" and blocker.severity == "write_blocker")]
-        semantic_write_allowed = bool(decision_plan.semantic_unresolved_count == 0 and decision_plan.write_allowed)
-        semantic_adjudication_report = decision_plan.semantic_adjudication_report or {}
-        validator_write_allowed = bool(validator_report.get("validator_report_ok")) and not any(
-            blocker.severity == "fatal" for blocker in validator_blockers
-        )
-        writer_fallback_count = int(material_write_plan.get("writer_fallback_count") or 0)
-        ready_for_write = bool(semantic_write_allowed and validator_write_allowed and writer_fallback_count == 0 and not blocking_blockers)
-        blocker_report = BlockerReport(
-            blocked=bool(blocking_blockers),
-            blockers=blockers,
-            summary={
-                "mode": inputs.mode,
-                "speech_timeline_provider": str(inputs.ingest_metadata.get("speech_timeline_provider") or ""),
-                "speech_timeline_granularity": str(inputs.ingest_metadata.get("speech_timeline_granularity") or ""),
-                "speech_timeline_precision": str(inputs.ingest_metadata.get("speech_timeline_precision") or ""),
-                "speech_timeline_can_cut_inside_caption": bool(inputs.ingest_metadata.get("speech_timeline_can_cut_inside_caption")),
-                "word_timeline_count": int(inputs.ingest_metadata.get("word_timeline_count") or len(source_graph.words)),
-                "single_source_graph_ok": source_graph.invariant_report.single_source_graph_ok,
-                "all_final_segments_have_word_ids": all(bool(segment.word_ids) for segment in final_timeline),
-                "all_captions_derived_from_final_timeline": bool(
-                    validator_report.get("subtitle_coverage_validator", {}).get("all_captions_derived_from_final_timeline")
-                ),
-                "all_materials_from_canonical_template": bool(material_write_plan.get("canonical_caption_template_id")),
-                "no_writer_fallback": bool(material_write_plan.get("no_writer_fallback")),
-                "writer_fallback_count": writer_fallback_count,
-                "semantic_unresolved_count": decision_plan.semantic_unresolved_count,
-                "semantic_adjudication_gate_passed": bool(semantic_adjudication_report.get("semantic_adjudication_gate_passed")),
-                "semantic_request_count": int(semantic_adjudication_report.get("semantic_request_count") or 0),
-                "semantic_request_unresolved_count": int(semantic_adjudication_report.get("semantic_request_unresolved_count") or 0),
-                "fatal_semantic_issue_count": int(semantic_adjudication_report.get("fatal_semantic_issue_count") or 0),
-                "deepseek_provider_configured": bool(semantic_adjudication_report.get("deepseek_provider_configured")),
-                "deepseek_provider_called_count": int(semantic_adjudication_report.get("deepseek_provider_called_count") or 0),
-                "deepseek_provider_error": str(semantic_adjudication_report.get("deepseek_provider_error") or ""),
-                "deepseek_batch_enabled": bool(semantic_adjudication_report.get("deepseek_batch_enabled")),
-                "deepseek_batch_request_count": int(semantic_adjudication_report.get("deepseek_batch_request_count") or 0),
-                "deepseek_batch_attempt_count": int(semantic_adjudication_report.get("deepseek_batch_attempt_count") or 0),
-                "deepseek_batch_retry_count": int(semantic_adjudication_report.get("deepseek_batch_retry_count") or 0),
-                "deepseek_batch_issue_count": int(semantic_adjudication_report.get("deepseek_batch_issue_count") or 0),
-                "deepseek_batch_resolved_count": int(semantic_adjudication_report.get("deepseek_batch_resolved_count") or 0),
-                "deepseek_batch_unresolved_count": int(semantic_adjudication_report.get("deepseek_batch_unresolved_count") or 0),
-                "deepseek_batch_missing_issue_ids": list(semantic_adjudication_report.get("deepseek_batch_missing_issue_ids") or []),
-                "deepseek_batch_error": str(semantic_adjudication_report.get("deepseek_batch_error") or ""),
-                "commit_reused_semantic_cache": bool(semantic_adjudication_report.get("commit_reused_semantic_cache")),
-                "semantic_cache_input_hash": str(semantic_adjudication_report.get("semantic_cache_input_hash") or ""),
-                "semantic_cache_issue_count": int(semantic_adjudication_report.get("semantic_cache_issue_count") or 0),
-                "semantic_cache_resolved_count": int(semantic_adjudication_report.get("semantic_cache_resolved_count") or 0),
-                "semantic_cache_unresolved_count": int(semantic_adjudication_report.get("semantic_cache_unresolved_count") or 0),
-                "deepseek_provider_skipped_count": int(semantic_adjudication_report.get("deepseek_provider_skipped_count") or 0),
-                "deepseek_provider_skipped_reasons": dict(semantic_adjudication_report.get("deepseek_provider_skipped_reasons") or {}),
-                "semantic_decision_cache_used": bool(semantic_adjudication_report.get("semantic_decision_cache_used")),
-                "semantic_auto_route_count": int(semantic_adjudication_report.get("semantic_auto_route_count") or 0),
-                "semantic_local_decision_count": int(semantic_adjudication_report.get("semantic_local_decision_count") or 0),
-                "semantic_provider_required_count": int(semantic_adjudication_report.get("semantic_provider_required_count") or 0),
-                "deterministic_baseline_refused_count": int(semantic_adjudication_report.get("deterministic_baseline_refused_count") or 0),
-                "requires_human_review": decision_plan.requires_human_review,
-                "semantic_write_allowed": semantic_write_allowed,
-                "validator_write_allowed": validator_write_allowed,
-                "write_allowed": ready_for_write,
-                "ready_for_write": ready_for_write,
-                "READY_FOR_DISPOSABLE_WRITE_PRE_AUDIT": ready_for_write,
-                "dry_run_continued_for_discovery": bool(
-                    inputs.mode == "dry-run" and decision_plan.dry_run_continued_for_discovery and final_timeline
-                ),
-            },
-        )
-        return RunReport(
-            status="blocked" if blocking_blockers else "ok",
+        return build_engine_run_report(
+            inputs=inputs,
             source_graph=source_graph,
             repeat_clusters=repeat_clusters,
             decision_plan=decision_plan,
@@ -497,9 +331,8 @@ class ArollEngine:
             captions=captions,
             material_write_plan=material_write_plan,
             validator_report=validator_report,
-            postwrite_report=validator_report.get("postwrite_material_validator") or {},
-            blocker_report=blocker_report,
-            decision_trace=decision_plan.decision_trace,
+            validator_blockers=validator_blockers,
+            blockers=blockers,
         )
 
     def _record_quality_mutation(

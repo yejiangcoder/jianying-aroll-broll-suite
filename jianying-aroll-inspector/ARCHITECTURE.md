@@ -1,8 +1,8 @@
 # A-Roll V21 Architecture Baseline
 
-Status: `PHASE_0_BASELINE`
+Status: `PHASE_0_GOVERNANCE_LOCK_ACTIVE`
 
-Date: 2026-06-29
+Date: 2026-06-30
 
 This document freezes the current architecture shape before the next refactor
 wave. It is a governance baseline, not a feature specification.
@@ -16,13 +16,14 @@ run_aroll_v21_operator.ps1
 -> src/aroll_v21.cli
 -> src/aroll_v21.operator.run_operator
 -> src/aroll_v21.engine.ArollEngine.run
+-> src/aroll_v21.engine_stages.run_engine_stages
 ```
 
 The operator owns runtime boundary checks, real draft ingest, dry-run/write
 mode selection, semantic provider construction, artifact writing, and writeback
 commit orchestration.
 
-`ArollEngine.run` owns the in-memory editing plan:
+`engine_stages.run_engine_stages` owns the in-memory editing stage order:
 
 ```text
 ingest/source graph
@@ -35,6 +36,9 @@ ingest/source graph
 -> read-only validators
 -> blocker/report summary
 ```
+
+`ArollEngine` still owns stage implementations and helper state. `run()` is a
+thin entry that delegates to the stage runner.
 
 ## Current Quality Chain
 
@@ -55,14 +59,273 @@ Implemented layers:
 Remaining centralization:
 
 - `src/aroll_v21/engine.py` is still the largest orchestration object.
-- `ArollEngine.run` still coordinates quality pass order, rechecks, cycle
-  detection, validator attachment, semantic request merge, and write gates.
+- `ArollEngine` still owns stage implementations, semantic helper methods, and
+  quality hook wiring.
 - `src/aroll_v21/quality/final_visible_caption_repair.py` still combines entry,
   dispatcher, aggregation, and historical repair glue.
 - `src/aroll_v21/quality/final_caption_visible_repeat.py` still contains many
   detector families in one module.
 - `quality_gate.py` and `engine_summary.py` still act as broad report-field
   buses.
+
+## Phase 0 Governance Lock
+
+Phase 0 does not migrate logic or change quality rules. It locks the current
+known-good boundaries so later cleanup cannot turn into another patch pile.
+
+Current cleanup targets:
+
+1. `src/aroll_v21/engine.py` remains the broad run orchestrator, but quality
+   pass sequencing must stay in `src/aroll_v21/quality/pipeline.py`.
+2. `src/aroll_v21/quality/final_visible_caption_repair.py` remains the public
+   repair entry and historical glue, but rule execution must stay in the
+   registry, pipeline, proposal-apply, context, and rule modules.
+3. `src/aroll_v21/quality/final_caption_visible_repeat.py` still assembles the
+   detector family, but detector, classifier, policy, repair-signal, gate, and
+   semantic-arbitration surfaces must stay explicit.
+4. `src/aroll_v21/engine_summary.py` and
+   `src/aroll_v21/quality/quality_gate.py` are report buses only; they must not
+   become repair or decision engines.
+
+Locked boundaries:
+
+- `engine.py` may inject `QualityPipelineHooks`, but must not import
+  `final_visible_repair.rules` or repair transaction internals.
+- validators/writeback cannot import repair modules.
+- summary/gate code cannot import repair proposal, context, or timeline
+  mutation APIs.
+- DeepSeek and other semantic providers remain
+  `advisory_only_no_timeline_mutation` for final-visible repeat.
+- `final_visible_repair/rules/*.py` cannot use dependency injection through
+  `configure_rule_dependencies` or `globals().update(...)`.
+- real draft writes are out of scope for architecture cleanup.
+
+Phase 0 verification commands:
+
+```powershell
+py -3 -m pytest tests/test_aroll_v21_no_architecture_drift.py tests/test_aroll_v21_no_drift.py tests/test_aroll_v21_no_drift_allowlist.py tests/test_aroll_v21_no_v20_patch_imports.py tests/test_aroll_v21_static_hidden_bug_scan.py -q
+py -3 -m pytest -q
+git diff --check
+```
+
+## Phase 1 Engine Stage Runner
+
+Status: `COMPLETE`
+
+Phase 1 moves only the top-level run-stage ordering out of `engine.py` and
+into:
+
+```text
+src/aroll_v21/engine_stages.py
+```
+
+The new module owns:
+
+- stage result data carriers
+- ingest/decision/compile/quality/writer/validation/summary order
+- early return when a stage produces a blocked report
+
+`ArollEngine.run()` now delegates to `run_engine_stages(self, inputs)`.
+`ArollEngine` still owns the stage methods, quality hook wiring, semantic
+helpers, and report construction helpers.
+
+Behavior boundary:
+
+- no quality rule changes
+- no semantic-provider changes
+- no validator/writeback repair
+- no real draft writes
+
+Architecture guard:
+
+- `tests/test_aroll_v21_no_architecture_drift.py` asserts that stage ordering
+  lives in `engine_stages.py` and does not drift back into `ArollEngine.run`.
+- `artifact_manifest.py` includes `engine_stages.py` in `code_version_hash` so
+  runner changes are visible to artifact reuse checks.
+
+## Phase 2 Validation Coordinator
+
+Status: `COMPLETE`
+
+Phase 2 moves validation-stage orchestration out of `engine.py` and into:
+
+```text
+src/aroll_v21/engine_validation_coordinator.py
+```
+
+The new module owns:
+
+- `ReadOnlyValidators.run` invocation
+- final-visible repair report attachment to validator output
+- final caption visible repeat gate attachment
+- final-visible semantic request merge and route refresh
+- semantic consistency blocker aggregation
+- validator blocker aggregation
+
+`ArollEngine._run_validation_stage()` now delegates to
+`run_engine_validation_stage(self, ...)`. The existing semantic helper methods
+and validator blocker helpers remain on `ArollEngine` for compatibility with
+current tests and debug seams.
+
+Behavior boundary:
+
+- no validator rule changes
+- no semantic-provider decision changes
+- no final timeline or caption mutation
+- no writeback repair
+
+Architecture guard:
+
+- `tests/test_aroll_v21_no_architecture_drift.py` asserts that validation
+  orchestration lives in `engine_validation_coordinator.py` and does not drift
+  back into `_run_validation_stage`.
+- `artifact_manifest.py` includes `engine_validation_coordinator.py` in
+  `code_version_hash`.
+
+## Phase 3 Run Report Builder
+
+Status: `COMPLETE`
+
+Phase 3 moves final `RunReport` and `BlockerReport` construction out of
+`engine.py` and into:
+
+```text
+src/aroll_v21/engine_report_builder.py
+```
+
+The new module owns:
+
+- blocking blocker selection
+- semantic/write/validator readiness booleans
+- blocker report summary fields
+- final `RunReport` construction
+
+`ArollEngine._build_final_run_report()` now delegates to
+`build_engine_run_report(...)`. `engine_summary.py` remains the artifact
+summary layer for `run_summary.json`; this phase only moves the in-memory
+`RunReport` assembly out of the engine.
+
+Behavior boundary:
+
+- no summary field changes
+- no ready/write gate changes
+- no blocker severity changes
+- no artifact schema changes beyond including this module in the code hash
+
+Architecture guard:
+
+- `tests/test_aroll_v21_no_architecture_drift.py` asserts that final report
+  construction lives in `engine_report_builder.py` and does not drift back into
+  `_build_final_run_report`.
+- `artifact_manifest.py` includes `engine_report_builder.py` in
+  `code_version_hash`.
+
+## Phase 4 Final-Visible Repair Report Builder
+
+Status: `COMPLETE`
+
+Phase 4 starts reducing `final_visible_caption_repair.py` by moving final
+repair report aggregation into:
+
+```text
+src/aroll_v21/quality/final_visible_repair/report_builder.py
+```
+
+The new module owns:
+
+- action-family counts for semantic junk, repeated island, boundary restart,
+  proposals, final timeline intents, and transactions
+- final visible repair success/count/blocker report fields
+- caption-only materialization report fields
+- pre-visible semantic junk report enrichment
+
+`repair_final_visible_caption_issues()` still owns the repair loop, final gate
+calculation, unresolved-state decision, and result construction. No detector,
+rule, transaction, or safe-handle behavior moves in this phase.
+
+Behavior boundary:
+
+- no rule execution order changes
+- no detector/classifier/policy changes
+- no safe-cut or safe-handle recompute changes
+- no report field shape changes
+
+Architecture guard:
+
+- `tests/test_aroll_v21_no_architecture_drift.py` asserts that final-visible
+  repair report aggregation lives in `report_builder.py` and does not drift
+  back into `final_visible_caption_repair.py`.
+
+## Phase 5 Final-Visible Repair Loop Runner
+
+Status: `COMPLETE`
+
+Phase 5 moves the main final-visible repair loop ordering out of
+`final_visible_caption_repair.py` and into:
+
+```text
+src/aroll_v21/quality/final_visible_repair/loop_runner.py
+```
+
+The new module owns:
+
+- transaction rule pass
+- proposal transaction pass
+- open-tail transaction pass
+- tail-proposal transaction pass
+- gate-candidate fallback pass
+- no-safe-deterministic-repair unresolved row emission for the main loop
+
+`repair_final_visible_caption_issues()` still owns context construction, rule
+registry construction, final gates, and result assembly.
+
+Behavior boundary:
+
+- no rule execution order changes
+- no candidate/gate condition changes
+- no residual or caption-only finalizer changes
+- no safe-handle recompute changes
+
+Architecture guard:
+
+- `tests/test_aroll_v21_no_architecture_drift.py` asserts that the main loop
+  ordering lives in `loop_runner.py` and does not drift back into
+  `final_visible_caption_repair.py`.
+
+## Phase 6 Final-Visible Repair Post-Loop Runner
+
+Status: `COMPLETE`
+
+Phase 6 moves the final-visible repair post-loop finalization out of
+`final_visible_caption_repair.py` and into:
+
+```text
+src/aroll_v21/quality/final_visible_repair/post_loop_runner.py
+```
+
+The new module owns:
+
+- residual transaction pass
+- caption-only finalizer pass order
+- final safe-handle recompute
+- post-safe-handle signature refresh
+
+`repair_final_visible_caption_issues()` still owns context construction, rule
+registry construction, final gate calculation, unresolved-state decision,
+report construction, and result construction.
+
+Behavior boundary:
+
+- no residual transaction rule changes
+- no caption-only finalizer rule changes
+- no safe-handle recompute condition changes
+- no final gate or report field changes
+
+Architecture guard:
+
+- `tests/test_aroll_v21_no_architecture_drift.py` asserts that post-loop
+  finalization lives in `post_loop_runner.py` and does not drift back into
+  `final_visible_caption_repair.py`.
 
 ## Non-Negotiable Boundaries
 
@@ -114,7 +377,10 @@ The required policy value is:
 advisory_only_no_timeline_mutation
 ```
 
-## Phase 0 Dirty Baseline
+## Historical Phase 0 Dirty Baseline
+
+This section records the initial 2026-06-29 dirty baseline. It is historical
+trace only; current cleanliness must be checked with `git status`.
 
 Before this document was added, the behavior changes from the latest quality
 architecture phases were local and uncommitted.

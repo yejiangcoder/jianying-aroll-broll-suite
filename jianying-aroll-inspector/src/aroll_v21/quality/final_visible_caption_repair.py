@@ -12,11 +12,11 @@ from aroll_v21.quality.final_visible_repair.convergence import (
 )
 from aroll_v21.quality.final_visible_repair.context import FinalVisibleRepairContext
 from aroll_v21.quality.final_visible_repair.loop_state import FinalVisibleRepairLoopState
-from aroll_v21.quality.final_visible_repair.pipeline import run_final_visible_repair_pipeline_once
+from aroll_v21.quality.final_visible_repair.loop_runner import run_final_visible_repair_loop
+from aroll_v21.quality.final_visible_repair.post_loop_runner import run_final_visible_repair_post_loop
 from aroll_v21.quality.final_visible_repair.registry import (
     FinalVisibleRepairRuleCallbacks,
     build_final_visible_repair_rule_registry,
-    build_gate_candidate_repair_rules,
 )
 from aroll_v21.quality.final_visible_repair.report import (
     FINAL_VISIBLE_REPAIR_COUNT_KEYS,
@@ -26,6 +26,7 @@ from aroll_v21.quality.final_visible_repair.report import (
     _repair_counts,
     _unique,
 )
+from aroll_v21.quality.final_visible_repair.report_builder import build_final_visible_caption_repair_report
 from aroll_v21.quality.final_visible_repair.rules import (
     caption_fragment as _caption_fragment_rules,
     caption_only_merge as _caption_only_merge_rules,
@@ -50,7 +51,7 @@ from aroll_v21.quality.final_visible_repair.proposal_apply import (
     repair_boundary_restart_with_proposal as _repair_boundary_restart_with_proposal,
     repair_repeated_island_with_proposal as _repair_repeated_island_with_proposal,
 )
-from aroll_v21.quality.final_timeline_repair_apply import apply_next_final_timeline_repair_intent, recompute_final_timeline_safe_handles
+from aroll_v21.quality.final_timeline_repair_apply import apply_next_final_timeline_repair_intent
 from aroll_v21.quality.final_visible_repair.text_boundary import (
     DE_SHI_BOUNDARY_NORMALIZE_AFTER,
     de_shi_boundary_should_drop_de as _de_shi_boundary_should_drop_de,
@@ -198,173 +199,30 @@ def repair_final_visible_caption_issues(
         )
     )
 
-    for pass_index in range(max_pass_limit):
-        passes_executed = pass_index + 1
-        transaction_result = run_final_visible_repair_pipeline_once(
-            context=repair_context,
-            final_timeline=loop_state.current_timeline,
-            captions=loop_state.current_captions,
-            pass_index=pass_index + 1,
-            current_signature=loop_state.current_signature,
-            seen_signatures=loop_state.seen_signatures,
-            rules=rule_registry.transaction_rules,
-        )
-        transaction_status = loop_state.consume_pipeline_result(transaction_result, pass_index=pass_index + 1)
-        if transaction_status == "stop":
-            break
-        if transaction_status == "accepted":
-            continue
-
-        proposal_result = run_final_visible_repair_pipeline_once(
-            context=repair_context,
-            final_timeline=loop_state.current_timeline,
-            captions=loop_state.current_captions,
-            pass_index=pass_index + 1,
-            current_signature=loop_state.current_signature,
-            seen_signatures=loop_state.seen_signatures,
-            rules=rule_registry.proposal_transaction_rules,
-        )
-        proposal_status = loop_state.consume_pipeline_result(proposal_result, pass_index=pass_index + 1)
-        if proposal_status == "stop":
-            break
-        if proposal_status == "accepted":
-            continue
-
-        open_tail_result = run_final_visible_repair_pipeline_once(
-            context=repair_context,
-            final_timeline=loop_state.current_timeline,
-            captions=loop_state.current_captions,
-            pass_index=pass_index + 1,
-            current_signature=loop_state.current_signature,
-            seen_signatures=loop_state.seen_signatures,
-            rules=rule_registry.open_tail_transaction_rules,
-        )
-        open_tail_status = loop_state.consume_pipeline_result(open_tail_result, pass_index=pass_index + 1)
-        if open_tail_status == "stop":
-            break
-        if open_tail_status == "accepted":
-            continue
-
-        tail_proposal_result = run_final_visible_repair_pipeline_once(
-            context=repair_context,
-            final_timeline=loop_state.current_timeline,
-            captions=loop_state.current_captions,
-            pass_index=pass_index + 1,
-            current_signature=loop_state.current_signature,
-            seen_signatures=loop_state.seen_signatures,
-            rules=rule_registry.tail_proposal_transaction_rules,
-        )
-        tail_proposal_status = loop_state.consume_pipeline_result(tail_proposal_result, pass_index=pass_index + 1)
-        if tail_proposal_status == "stop":
-            break
-        if tail_proposal_status == "accepted":
-            continue
-
-        rendered_gate = build_final_caption_visible_repeat_gate(loop_state.current_captions)
-        timeline_captions = _timeline_caption_units(loop_state.current_timeline, source_graph)
-        effective_timeline_captions, timeline_materializations = _effective_timeline_caption_units(
-            timeline_captions,
-            loop_state.current_captions,
-        )
-        timeline_gate = _timeline_gate(effective_timeline_captions, timeline_materializations)
-        rendered_counts = _repair_counts(rendered_gate)
-        timeline_counts = _repair_counts(timeline_gate)
-        if not any(rendered_counts.values()) and not any(timeline_counts.values()):
-            loop_state.stop_reason = "converged"
-            break
-        gate_candidate_result = run_final_visible_repair_pipeline_once(
-            context=repair_context,
-            final_timeline=loop_state.current_timeline,
-            captions=loop_state.current_captions,
-            pass_index=pass_index + 1,
-            current_signature=loop_state.current_signature,
-            seen_signatures=loop_state.seen_signatures,
-            rules=build_gate_candidate_repair_rules(
-                repair_next_issue=_repair_next_issue,
-                rendered_gate=rendered_gate,
-                timeline_gate=timeline_gate,
-                current_captions=loop_state.current_captions,
-                effective_timeline_captions=effective_timeline_captions,
-            ),
-        )
-        if gate_candidate_result.transaction is None:
-            loop_state.unresolved.append(
-                {
-                    "pass_index": pass_index + 1,
-                    "counts": rendered_counts,
-                    "timeline_counts": timeline_counts,
-                    "blocker_codes": list(rendered_gate.get("blocker_codes") or []),
-                    "timeline_blocker_codes": list(timeline_gate.get("blocker_codes") or []),
-                    "reason": "no_safe_deterministic_repair_available",
-                }
-            )
-            loop_state.stop_reason = "no_safe_deterministic_repair_available"
-            break
-        gate_candidate_status = loop_state.consume_pipeline_result(gate_candidate_result, pass_index=pass_index + 1)
-        if gate_candidate_status == "stop":
-            break
-        continue
-
-    residual_result = run_final_visible_repair_pipeline_once(
-        context=repair_context,
-        final_timeline=loop_state.current_timeline,
-        captions=loop_state.current_captions,
-        pass_index=len(loop_state.actions) + 1,
-        current_signature=loop_state.current_signature,
-        seen_signatures=loop_state.seen_signatures,
-        rules=rule_registry.residual_transaction_rules,
-    )
-    loop_state.consume_pipeline_result(residual_result, pass_index=len(loop_state.actions) + 1)
-
-    for caption_only_finalizer_rule in rule_registry.caption_only_finalizer_rules:
-        caption_only_result = run_final_visible_repair_pipeline_once(
-            context=repair_context,
-            final_timeline=loop_state.current_timeline,
-            captions=loop_state.current_captions,
-            pass_index=len(loop_state.actions) + 1,
-            current_signature=loop_state.current_signature,
-            seen_signatures=loop_state.seen_signatures,
-            rules=[caption_only_finalizer_rule],
-        )
-        caption_only_status = loop_state.consume_pipeline_result(
-            caption_only_result,
-            pass_index=len(loop_state.actions) + 1,
-        )
-        if caption_only_status == "stop":
-            break
-
-    final_safe_handle_result = recompute_final_timeline_safe_handles(
-        final_timeline=loop_state.current_timeline,
-        captions=loop_state.current_captions,
+    loop_run_result = run_final_visible_repair_loop(
+        repair_context=repair_context,
+        loop_state=loop_state,
+        rule_registry=rule_registry,
         source_graph=source_graph,
-        render_captions=render_captions,
-        pass_index=len(loop_state.actions) + 1,
+        max_pass_limit=max_pass_limit,
+        timeline_caption_units=_timeline_caption_units,
+        effective_timeline_caption_units=_effective_timeline_caption_units,
+        timeline_gate=_timeline_gate,
+        repair_next_issue=_repair_next_issue,
     )
-    if final_safe_handle_result is not None:
-        loop_state.current_timeline = final_safe_handle_result.final_timeline
-        loop_state.current_captions = final_safe_handle_result.captions
-        loop_state.actions.extend([final_safe_handle_result.action])
-        loop_state.current_signature = _repair_state_signature(loop_state.current_timeline, loop_state.current_captions)
-        loop_state.seen_signatures.add(loop_state.current_signature)
+    loop_state = loop_run_result.loop_state
+    passes_executed = loop_run_result.passes_executed
+
+    post_loop_result = run_final_visible_repair_post_loop(
+        repair_context=repair_context,
+        loop_state=loop_state,
+        rule_registry=rule_registry,
+        source_graph=source_graph,
+    )
+    loop_state = post_loop_result.loop_state
 
     final_gate = build_final_caption_visible_repeat_gate(loop_state.current_captions)
     final_semantic_junk_report = build_pre_visible_semantic_junk_candidate_report(loop_state.current_captions, source_graph)
-    semantic_junk_actions = [
-        action
-        for action in loop_state.actions
-        if str(action.get("issue_type") or "") == "pre_visible_semantic_junk_candidate"
-    ]
-    final_semantic_junk_report = {
-        **final_semantic_junk_report,
-        "pre_visible_semantic_junk_audit_only": False,
-        "pre_visible_semantic_junk_candidate_detector_audit_only": True,
-        "pre_visible_semantic_junk_timeline_mutation_allowed": True,
-        "pre_visible_semantic_junk_deterministic_apply_enabled": True,
-        "pre_visible_semantic_junk_deterministic_apply_policy": "local_high_confidence_drop_fragment_only",
-        "pre_visible_semantic_junk_deterministic_apply_min_confidence": PRE_VISIBLE_SEMANTIC_JUNK_MIN_HIGH_CONFIDENCE,
-        "pre_visible_semantic_junk_repair_action_count": len(semantic_junk_actions),
-        "pre_visible_semantic_junk_repair_actions": semantic_junk_actions,
-    }
     final_effective_timeline_captions, final_materializations = _effective_timeline_caption_units(
         _timeline_caption_units(loop_state.current_timeline, source_graph),
         loop_state.current_captions,
@@ -373,31 +231,6 @@ def repair_final_visible_caption_issues(
     final_repeated_island_candidates = [
         candidate.to_evidence()
         for candidate in _repeated_island_rules.detect_repeated_island_candidates(loop_state.current_timeline, source_graph)
-    ]
-    boundary_restart_actions = [
-        action
-        for action in loop_state.actions
-        if str(action.get("issue_type") or "") == "boundary_restart"
-    ]
-    repeated_island_actions = [
-        action
-        for action in loop_state.actions
-        if str(action.get("issue_type") or "") == "repeated_island"
-    ]
-    timeline_repair_proposal_actions = [
-        action
-        for action in loop_state.actions
-        if str(action.get("proposal_id") or "")
-    ]
-    final_timeline_intent_actions = [
-        action
-        for action in loop_state.actions
-        if str(action.get("issue_type") or "") == "final_timeline_repair_intent"
-    ]
-    transaction_actions = [
-        action
-        for action in loop_state.actions
-        if str(action.get("repair_transaction_rule_name") or "")
     ]
     final_counts = _repair_counts(final_gate)
     final_timeline_counts = _repair_counts(final_timeline_gate)
@@ -418,93 +251,27 @@ def repair_final_visible_caption_issues(
     if repair_success and not loop_state.stop_reason:
         loop_state.stop_reason = "converged"
 
-    report = {
-        "final_visible_repair_enabled": True,
-        "final_visible_repair_attempted": bool(loop_state.actions) or any(_repair_counts(initial_gate).values()) or any(_repair_counts(initial_timeline_gate).values()),
-        "final_visible_repair_success": repair_success,
-        "final_visible_repair_max_passes": max_pass_limit,
-        "final_visible_repair_passes_executed": passes_executed,
-        "final_visible_repair_stop_reason": loop_state.stop_reason,
-        "final_visible_repair_no_progress_detected": loop_state.stop_reason == "no_progress_detected",
-        "final_visible_repair_max_pass_exhausted": any(
-            str(row.get("reason") or "") == "max_repair_passes_exhausted"
-            for row in loop_state.unresolved
-        ),
-        "final_visible_repair_progress_state_count": len(loop_state.seen_signatures),
-        "final_visible_repair_action_count": len(loop_state.actions),
-        "final_visible_repair_actions": loop_state.actions,
-        "final_visible_repair_transaction_count": len(transaction_actions),
-        "final_visible_repair_transaction_rule_names": _unique(
-            [str(action.get("repair_transaction_rule_name") or "") for action in transaction_actions]
-        ),
-        "final_visible_repair_pipeline_rule_names": [rule.name for rule in rule_registry.transaction_rules],
-        "final_visible_repair_unresolved": loop_state.unresolved,
-        "final_visible_repair_initial_counts": _repair_counts(initial_gate),
-        "final_visible_repair_initial_timeline_counts": _repair_counts(initial_timeline_gate),
-        "final_visible_repair_final_counts": final_counts,
-        "final_visible_repair_final_timeline_counts": final_timeline_counts,
-        "pre_visible_semantic_junk_initial_report": initial_semantic_junk_report,
-        "pre_visible_semantic_junk_report": final_semantic_junk_report,
-        "pre_visible_semantic_junk_initial_candidate_count": int(initial_semantic_junk_report.get("pre_visible_semantic_junk_candidate_count") or 0),
-        "pre_visible_semantic_junk_final_candidate_count": int(final_semantic_junk_report.get("pre_visible_semantic_junk_candidate_count") or 0),
-        "pre_visible_semantic_junk_repair_action_count": len(semantic_junk_actions),
-        "pre_visible_semantic_junk_repair_actions": semantic_junk_actions,
-        "pre_visible_semantic_junk_audit_only": False,
-        "pre_visible_semantic_junk_candidate_detector_audit_only": True,
-        "pre_visible_semantic_junk_timeline_mutation_allowed": True,
-        "pre_visible_semantic_junk_deterministic_apply_enabled": True,
-        "pre_visible_semantic_junk_deterministic_apply_policy": "local_high_confidence_drop_fragment_only",
-        "repeated_island_initial_candidate_count": len(initial_repeated_island_candidates),
-        "repeated_island_initial_candidates": initial_repeated_island_candidates,
-        "repeated_island_candidate_count": len(final_repeated_island_candidates),
-        "repeated_island_high_confidence_count": _repeated_island_confidence_count(
-            final_repeated_island_candidates,
-            "high",
-        ),
-        "repeated_island_medium_confidence_count": _repeated_island_confidence_count(
-            final_repeated_island_candidates,
-            "medium",
-        ),
-        "repeated_island_low_confidence_count": _repeated_island_confidence_count(
-            final_repeated_island_candidates,
-            "low",
-        ),
-        "repeated_island_warning_count": _repeated_island_confidence_count(
-            final_repeated_island_candidates,
-            "medium",
-        ),
-        "repeated_island_candidates": final_repeated_island_candidates,
-        "repeated_island_repair_action_count": len(repeated_island_actions),
-        "repeated_island_repair_actions": repeated_island_actions,
-        "boundary_restart_repair_action_count": len(boundary_restart_actions),
-        "boundary_restart_repair_actions": boundary_restart_actions,
-        "timeline_repair_proposal_action_count": len(timeline_repair_proposal_actions),
-        "timeline_repair_proposal_actions": timeline_repair_proposal_actions,
-        "final_timeline_repair_intent_action_count": len(final_timeline_intent_actions),
-        "final_timeline_repair_intent_actions": final_timeline_intent_actions,
-        "final_visible_effective_caption_count": len(final_effective_timeline_captions),
-        "caption_only_materialized_merge_count": len(final_materializations),
-        "caption_only_materialized_merges": final_materializations,
-        "caption_only_consumed_caption_ids": [
-            caption_id
-            for row in final_materializations
-            for caption_id in list(row.get("consumed_caption_ids") or [])
-        ],
-        "source_boundary_prefix_repair_count": sum(
-            1
-            for action in loop_state.actions
-            if str(action.get("decision") or "") == "prepend_source_boundary_prefix"
-        ),
-        "final_visible_repair_initial_blocker_codes": list(initial_gate.get("blocker_codes") or []),
-        "final_visible_repair_initial_timeline_blocker_codes": list(initial_timeline_gate.get("blocker_codes") or []),
-        "final_visible_repair_final_blocker_codes": list(final_gate.get("blocker_codes") or []),
-        "final_visible_repair_final_timeline_blocker_codes": list(final_timeline_gate.get("blocker_codes") or []),
-        "final_visible_recheck_allowed_decisions": list(FINAL_VISIBLE_RECHECK_DECISIONS),
-        "final_visible_recheck_required_count": max(
-            int(final_counts.get("semantic_garbage_or_asr_suspect_count") or 0),
-            int(final_timeline_counts.get("semantic_garbage_or_asr_suspect_count") or 0),
-        ),
-    }
+    report = build_final_visible_caption_repair_report(
+        loop_state=loop_state,
+        rule_registry=rule_registry,
+        initial_gate=initial_gate,
+        initial_timeline_gate=initial_timeline_gate,
+        final_gate=final_gate,
+        final_timeline_gate=final_timeline_gate,
+        initial_semantic_junk_report=initial_semantic_junk_report,
+        final_semantic_junk_report=final_semantic_junk_report,
+        pre_visible_semantic_junk_min_confidence=PRE_VISIBLE_SEMANTIC_JUNK_MIN_HIGH_CONFIDENCE,
+        initial_repeated_island_candidates=initial_repeated_island_candidates,
+        final_repeated_island_candidates=final_repeated_island_candidates,
+        final_effective_timeline_captions=final_effective_timeline_captions,
+        final_materializations=final_materializations,
+        final_counts=final_counts,
+        final_timeline_counts=final_timeline_counts,
+        repair_success=repair_success,
+        max_pass_limit=max_pass_limit,
+        passes_executed=passes_executed,
+        final_visible_recheck_decisions=list(FINAL_VISIBLE_RECHECK_DECISIONS),
+    )
     return FinalVisibleCaptionRepairResult(
         final_timeline=loop_state.current_timeline,
         captions=loop_state.current_captions,
@@ -536,13 +303,6 @@ def _repair_final_timeline_quality_intent(
         action=result.action,
         timeline_changed=result.timeline_changed,
     )
-
-
-def _repeated_island_confidence_count(
-    candidates: list[dict[str, Any]],
-    confidence: str,
-) -> int:
-    return sum(1 for candidate in candidates if str(candidate.get("confidence") or "") == confidence)
 
 
 def _repair_next_issue(

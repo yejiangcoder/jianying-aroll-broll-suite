@@ -9,6 +9,16 @@ V21_SRC = ROOT / "src" / "aroll_v21"
 V21_ENTRY = ROOT / "run_aroll_v21_operator.ps1"
 
 
+def read_rel(path: str) -> str:
+    return (ROOT / path).read_text("utf-8")
+
+
+def py_text_under(path: Path) -> str:
+    if not path.exists():
+        return ""
+    return "\n".join(file.read_text("utf-8") for file in sorted(path.rglob("*.py")))
+
+
 def v21_text() -> str:
     return "\n".join([*(path.read_text("utf-8") for path in V21_SRC.rglob("*.py")), V21_ENTRY.read_text("utf-8")])
 
@@ -48,6 +58,220 @@ class ArollV21NoArchitectureDriftTests(unittest.TestCase):
                 line,
             )
 
+    def test_phase0_governance_lock_documents_current_boundaries(self) -> None:
+        architecture = read_rel("ARCHITECTURE.md")
+        for token in (
+            "PHASE_0_GOVERNANCE_LOCK_ACTIVE",
+            "engine.py",
+            "quality/pipeline.py",
+            "final_visible_caption_repair.py",
+            "final_caption_visible_repeat.py",
+            "engine_summary.py",
+            "quality_gate.py",
+            "validators/writeback cannot import repair modules",
+            "advisory_only_no_timeline_mutation",
+        ):
+            self.assertIn(token, architecture)
+
+    def test_engine_does_not_directly_import_final_visible_rule_modules(self) -> None:
+        engine = (V21_SRC / "engine.py").read_text("utf-8")
+
+        for token in (
+            "quality.final_visible_repair.rules",
+            "FinalVisibleRepairContext",
+            "FinalVisibleRepairRuleRegistry",
+            "TimelineRepairProposal",
+            "FinalVisibleRepairTransaction",
+        ):
+            self.assertNotIn(token, engine)
+
+        for token in (
+            "QualityPipeline(",
+            "QualityPipelineHooks(",
+            "repair_final_visible_caption_issues=repair_final_visible_caption_issues",
+        ):
+            self.assertIn(token, engine)
+
+    def test_phase1_engine_run_delegates_to_stage_runner(self) -> None:
+        engine = (V21_SRC / "engine.py").read_text("utf-8")
+        stages = (V21_SRC / "engine_stages.py").read_text("utf-8")
+        artifact_manifest = (V21_SRC / "artifact_manifest.py").read_text("utf-8")
+
+        for token in (
+            "run_engine_stages",
+            "EngineIngestStageResult",
+            "EngineDecisionStageResult",
+            "EngineCompileStageResult",
+            "EngineQualityStageResult",
+            "EngineWriterStageResult",
+            "EngineValidationStageResult",
+        ):
+            self.assertIn(token, stages)
+
+        for token in (
+            "engine._run_ingest_stage",
+            "engine._run_decision_stage",
+            "engine._run_compile_stage",
+            "engine._run_quality_stage",
+            "engine._run_writer_stage",
+            "engine._run_validation_stage",
+            "engine._build_final_run_report",
+        ):
+            self.assertIn(token, stages)
+
+        self.assertIn("from aroll_v21.engine_stages import", engine)
+        self.assertIn("return run_engine_stages(self, inputs)", engine)
+        for token in (
+            "class _IngestStageResult",
+            "class _DecisionStageResult",
+            "class _CompileStageResult",
+            "class _QualityStageResult",
+            "class _WriterStageResult",
+            "class _ValidationStageResult",
+            "ingest_stage = self._run_ingest_stage",
+            "decision_stage = self._run_decision_stage",
+            "compile_stage = self._run_compile_stage",
+            "writer_stage = self._run_writer_stage",
+        ):
+            self.assertNotIn(token, engine)
+
+        self.assertIn("src/aroll_v21/engine_stages.py", artifact_manifest)
+
+    def test_phase2_validation_stage_delegates_to_validation_coordinator(self) -> None:
+        engine = (V21_SRC / "engine.py").read_text("utf-8")
+        coordinator = (V21_SRC / "engine_validation_coordinator.py").read_text("utf-8")
+        architecture = read_rel("ARCHITECTURE.md")
+        artifact_manifest = (V21_SRC / "artifact_manifest.py").read_text("utf-8")
+
+        for token in (
+            "run_engine_validation_stage",
+            "engine.validators.run",
+            'validator_report["final_visible_caption_repair_report"] = final_visible_repair_report',
+            "engine._attach_final_caption_visible_repeat_gate",
+            "engine._merge_final_visible_repeat_semantic_requests",
+            "engine._route_final_visible_repeat_semantic_requests",
+            "engine._refresh_validator_semantic_gate_after_request_merge",
+            "engine._semantic_request_consistency_blockers",
+            "engine._validator_blockers",
+            "EngineValidationStageResult",
+        ):
+            self.assertIn(token, coordinator)
+
+        self.assertIn("from aroll_v21.engine_validation_coordinator import run_engine_validation_stage", engine)
+        self.assertIn("return run_engine_validation_stage(", engine)
+        for token in (
+            "validator_report = self.validators.run(",
+            'validator_report["final_visible_caption_repair_report"] = final_visible_repair_report',
+            "final_visible_semantic_changed = self._merge_final_visible_repeat_semantic_requests",
+            "consistency_blockers = self._semantic_request_consistency_blockers(decision_plan, validator_report)",
+            "validator_blockers: list[Blocker] = []",
+        ):
+            self.assertNotIn(token, engine)
+
+        self.assertIn("Phase 2 Validation Coordinator", architecture)
+        self.assertIn("src/aroll_v21/engine_validation_coordinator.py", architecture)
+        self.assertIn("src/aroll_v21/engine_validation_coordinator.py", artifact_manifest)
+
+    def test_phase3_final_run_report_delegates_to_report_builder(self) -> None:
+        engine = (V21_SRC / "engine.py").read_text("utf-8")
+        builder = (V21_SRC / "engine_report_builder.py").read_text("utf-8")
+        architecture = read_rel("ARCHITECTURE.md")
+        artifact_manifest = (V21_SRC / "artifact_manifest.py").read_text("utf-8")
+
+        for token in (
+            "build_engine_run_report",
+            "blocking_blockers =",
+            "semantic_write_allowed =",
+            "validator_write_allowed =",
+            "writer_fallback_count =",
+            "READY_FOR_DISPOSABLE_WRITE_PRE_AUDIT",
+            "BlockerReport(",
+            "RunReport(",
+        ):
+            self.assertIn(token, builder)
+
+        self.assertIn("from aroll_v21.engine_report_builder import build_engine_run_report", engine)
+        self.assertIn("return build_engine_run_report(", engine)
+        for token in (
+            "blocking_blockers = [",
+            "semantic_write_allowed = bool(decision_plan.semantic_unresolved_count == 0",
+            "validator_write_allowed = bool(validator_report.get(\"validator_report_ok\"))",
+            "writer_fallback_count = int(material_write_plan.get(\"writer_fallback_count\") or 0)",
+            "READY_FOR_DISPOSABLE_WRITE_PRE_AUDIT",
+            "BlockerReport(",
+            "return RunReport(",
+        ):
+            self.assertNotIn(token, engine)
+
+        self.assertIn("Phase 3 Run Report Builder", architecture)
+        self.assertIn("src/aroll_v21/engine_report_builder.py", architecture)
+        self.assertIn("src/aroll_v21/engine_report_builder.py", artifact_manifest)
+
+    def test_validators_and_writeback_do_not_import_repair_modules(self) -> None:
+        validator_and_writeback = "\n".join(
+            [
+                py_text_under(V21_SRC / "validate"),
+                py_text_under(V21_SRC / "writeback"),
+            ]
+        )
+
+        for token in (
+            "quality.final_visible_caption_repair",
+            "quality.final_visible_repair",
+            "repair_final_visible_caption_issues",
+            "TimelineRepairProposal",
+            "FinalVisibleRepairContext",
+            "apply_next_final_timeline_repair_intent",
+        ):
+            self.assertNotIn(token, validator_and_writeback)
+
+    def test_summary_and_quality_gate_are_report_consumers_not_repair_engines(self) -> None:
+        summary_and_gate = "\n".join(
+            [
+                (V21_SRC / "engine_summary.py").read_text("utf-8"),
+                (V21_SRC / "quality" / "quality_gate.py").read_text("utf-8"),
+            ]
+        )
+
+        for token in (
+            "final_visible_caption_repair_report",
+            "final_visible_repair_success",
+            "blocker_codes",
+            "gate_passed",
+        ):
+            self.assertIn(token, summary_and_gate)
+
+        for token in (
+            "from aroll_v21.quality.final_visible_repair",
+            "repair_final_visible_caption_issues",
+            "TimelineRepairProposal",
+            "FinalVisibleRepairContext",
+            "apply_next_final_timeline_repair_intent",
+            "QualityPipeline(",
+        ):
+            self.assertNotIn(token, summary_and_gate)
+
+    def test_final_caption_visible_repeat_keeps_detector_classifier_policy_gate_boundary(self) -> None:
+        repeat_entry = (V21_SRC / "quality" / "final_caption_visible_repeat.py").read_text("utf-8")
+
+        for token in (
+            "FinalCaptionVisibleDetectorSet",
+            "build_final_caption_visible_gate_report",
+            "detect_final_caption_visible_evidence",
+            "classify_final_caption_visible_evidence",
+            "build_final_caption_visible_policy",
+            "build_final_caption_visible_repair_signal",
+        ):
+            self.assertIn(token, repeat_entry)
+
+        for token in (
+            "repair_final_visible_caption_issues",
+            "TimelineRepairProposal",
+            "FinalVisibleRepairContext",
+            "QualityPipeline(",
+        ):
+            self.assertNotIn(token, repeat_entry)
+
     def test_final_caption_visible_repeat_has_explicit_quality_layers(self) -> None:
         root = V21_SRC / "quality" / "final_caption_visible"
         for name in ("detector.py", "classifier.py", "policy.py", "repair_signal.py", "gate.py"):
@@ -65,10 +289,128 @@ class ArollV21NoArchitectureDriftTests(unittest.TestCase):
         for verdict in ("BLOCKER_FATAL", "REPAIRABLE_FATAL", "WARNING", "ALLOW", "HUMAN_REVIEW"):
             self.assertIn(verdict, policy)
 
+    def test_phase4_final_visible_repair_report_aggregation_lives_in_report_builder(self) -> None:
+        root = V21_SRC / "quality" / "final_visible_repair"
+        entry = (V21_SRC / "quality" / "final_visible_caption_repair.py").read_text("utf-8")
+        report_builder = (root / "report_builder.py").read_text("utf-8")
+        architecture = read_rel("ARCHITECTURE.md")
+
+        for token in (
+            "build_final_visible_caption_repair_report",
+            "final_visible_repair_enabled",
+            "final_visible_repair_transaction_rule_names",
+            "pre_visible_semantic_junk_repair_action_count",
+            "repeated_island_repair_action_count",
+            "boundary_restart_repair_action_count",
+            "timeline_repair_proposal_action_count",
+            "final_timeline_repair_intent_action_count",
+            "caption_only_materialized_merge_count",
+            "final_visible_recheck_required_count",
+        ):
+            self.assertIn(token, report_builder)
+
+        self.assertIn("from aroll_v21.quality.final_visible_repair.report_builder import build_final_visible_caption_repair_report", entry)
+        self.assertIn("report = build_final_visible_caption_repair_report(", entry)
+        for token in (
+            "semantic_junk_actions = [",
+            "boundary_restart_actions = [",
+            "repeated_island_actions = [",
+            "timeline_repair_proposal_actions = [",
+            "transaction_actions = [",
+            "\"final_visible_repair_enabled\": True",
+            "\"pre_visible_semantic_junk_repair_action_count\": len(semantic_junk_actions)",
+            "\"boundary_restart_repair_action_count\": len(boundary_restart_actions)",
+            "def _repeated_island_confidence_count",
+        ):
+            self.assertNotIn(token, entry)
+
+        self.assertIn("Phase 4 Final-Visible Repair Report Builder", architecture)
+        self.assertIn("src/aroll_v21/quality/final_visible_repair/report_builder.py", architecture)
+
+    def test_phase5_final_visible_repair_main_loop_lives_in_loop_runner(self) -> None:
+        root = V21_SRC / "quality" / "final_visible_repair"
+        entry = (V21_SRC / "quality" / "final_visible_caption_repair.py").read_text("utf-8")
+        loop_runner = (root / "loop_runner.py").read_text("utf-8")
+        architecture = read_rel("ARCHITECTURE.md")
+
+        for token in (
+            "FinalVisibleRepairLoopRunResult",
+            "run_final_visible_repair_loop",
+            "rule_registry.transaction_rules",
+            "rule_registry.proposal_transaction_rules",
+            "rule_registry.open_tail_transaction_rules",
+            "rule_registry.tail_proposal_transaction_rules",
+            "build_gate_candidate_repair_rules",
+            "no_safe_deterministic_repair_available",
+            "consume_pipeline_result",
+            "run_final_visible_repair_pipeline_once",
+        ):
+            self.assertIn(token, loop_runner)
+
+        self.assertIn("from aroll_v21.quality.final_visible_repair.loop_runner import run_final_visible_repair_loop", entry)
+        self.assertIn("loop_run_result = run_final_visible_repair_loop(", entry)
+        self.assertIn("passes_executed = loop_run_result.passes_executed", entry)
+        for token in (
+            "for pass_index in range(max_pass_limit):",
+            "transaction_result = run_final_visible_repair_pipeline_once(",
+            "proposal_result = run_final_visible_repair_pipeline_once(",
+            "open_tail_result = run_final_visible_repair_pipeline_once(",
+            "tail_proposal_result = run_final_visible_repair_pipeline_once(",
+            "gate_candidate_result = run_final_visible_repair_pipeline_once(",
+            "rule_registry.proposal_transaction_rules",
+            "rule_registry.open_tail_transaction_rules",
+            "rule_registry.tail_proposal_transaction_rules",
+            "build_gate_candidate_repair_rules(",
+        ):
+            self.assertNotIn(token, entry)
+
+        self.assertIn("Phase 5 Final-Visible Repair Loop Runner", architecture)
+        self.assertIn("src/aroll_v21/quality/final_visible_repair/loop_runner.py", architecture)
+
+    def test_phase6_final_visible_repair_post_loop_lives_in_post_loop_runner(self) -> None:
+        root = V21_SRC / "quality" / "final_visible_repair"
+        entry = (V21_SRC / "quality" / "final_visible_caption_repair.py").read_text("utf-8")
+        post_loop_runner = (root / "post_loop_runner.py").read_text("utf-8")
+        architecture = read_rel("ARCHITECTURE.md")
+
+        for token in (
+            "FinalVisibleRepairPostLoopResult",
+            "run_final_visible_repair_post_loop",
+            "rule_registry.residual_transaction_rules",
+            "rule_registry.caption_only_finalizer_rules",
+            "recompute_final_timeline_safe_handles",
+            "repair_context.repair_state_signature",
+            "consume_pipeline_result",
+            "run_final_visible_repair_pipeline_once",
+        ):
+            self.assertIn(token, post_loop_runner)
+
+        self.assertIn(
+            "from aroll_v21.quality.final_visible_repair.post_loop_runner import run_final_visible_repair_post_loop",
+            entry,
+        )
+        self.assertIn("post_loop_result = run_final_visible_repair_post_loop(", entry)
+        self.assertIn("loop_state = post_loop_result.loop_state", entry)
+        for token in (
+            "residual_result = run_final_visible_repair_pipeline_once(",
+            "for caption_only_finalizer_rule in rule_registry.caption_only_finalizer_rules:",
+            "final_safe_handle_result = recompute_final_timeline_safe_handles(",
+            "rule_registry.residual_transaction_rules",
+            "rule_registry.caption_only_finalizer_rules",
+            "recompute_final_timeline_safe_handles",
+            "run_final_visible_repair_pipeline_once",
+        ):
+            self.assertNotIn(token, entry)
+
+        self.assertIn("Phase 6 Final-Visible Repair Post-Loop Runner", architecture)
+        self.assertIn("src/aroll_v21/quality/final_visible_repair/post_loop_runner.py", architecture)
+
     def test_final_visible_repair_has_transaction_pipeline_seed(self) -> None:
         root = V21_SRC / "quality" / "final_visible_repair"
         context = (root / "context.py").read_text("utf-8")
         pipeline = (root / "pipeline.py").read_text("utf-8")
+        loop_runner = (root / "loop_runner.py").read_text("utf-8")
+        post_loop_runner = (root / "post_loop_runner.py").read_text("utf-8")
         proposal_apply = (root / "proposal_apply.py").read_text("utf-8")
         registry = (root / "registry.py").read_text("utf-8")
         loop_state = (root / "loop_state.py").read_text("utf-8")
@@ -104,14 +446,20 @@ class ArollV21NoArchitectureDriftTests(unittest.TestCase):
             "consume_pipeline_result",
         ):
             self.assertIn(token, loop_state)
-            self.assertIn(token, entry)
+        self.assertIn("FinalVisibleRepairLoopState", entry)
+        for token in (
+            "consume_pipeline_result",
+        ):
+            self.assertIn(token, loop_runner)
+            self.assertIn(token, post_loop_runner)
         for token in (
             "FinalVisibleRepairRuleCallbacks",
             "build_final_visible_repair_rule_registry",
-            "build_gate_candidate_repair_rules",
         ):
             self.assertIn(token, registry)
             self.assertIn(token, entry)
+        self.assertIn("build_gate_candidate_repair_rules", registry)
+        self.assertIn("build_gate_candidate_repair_rules", loop_runner)
         self.assertIn("FinalVisibleRepairRuleRegistry", registry)
         for token in (
             "CaptionOnlyFinalizerRule",
@@ -119,10 +467,13 @@ class ArollV21NoArchitectureDriftTests(unittest.TestCase):
         ):
             self.assertIn(token, caption_only_merge)
         self.assertIn("CaptionOnlyFinalizerRule", registry)
-        self.assertIn("run_final_visible_repair_pipeline_once", entry)
-        self.assertIn("rule_registry.proposal_transaction_rules", entry)
-        self.assertIn("rule_registry.open_tail_transaction_rules", entry)
-        self.assertIn("rule_registry.caption_only_finalizer_rules", entry)
+        self.assertNotIn("run_final_visible_repair_pipeline_once", entry)
+        self.assertIn("run_final_visible_repair_pipeline_once", loop_runner)
+        self.assertIn("run_final_visible_repair_pipeline_once", post_loop_runner)
+        self.assertIn("rule_registry.proposal_transaction_rules", loop_runner)
+        self.assertIn("rule_registry.open_tail_transaction_rules", loop_runner)
+        self.assertIn("rule_registry.tail_proposal_transaction_rules", loop_runner)
+        self.assertIn("rule_registry.caption_only_finalizer_rules", post_loop_runner)
         for token in (
             "RenderCallbackAdapter",
             "apply_timeline_repair_proposal_as_step",

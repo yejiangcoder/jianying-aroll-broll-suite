@@ -89,6 +89,9 @@ def _code_version_hash() -> str:
     for relative in (
         "src/aroll_v21/operator.py",
         "src/aroll_v21/engine.py",
+        "src/aroll_v21/engine_report_builder.py",
+        "src/aroll_v21/engine_stages.py",
+        "src/aroll_v21/engine_validation_coordinator.py",
         "src/aroll_v21/cli.py",
         "scripts/uat_fresh_draft.ps1",
     ):
