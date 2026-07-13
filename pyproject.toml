@@ -5,13 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "jianying-aroll-broll-suite"
 version = "0.1.0"
-description = "Jianying / CapCut automation suite for A-Roll editing and AI-assisted B-Roll image alignment."
+description = "Jianying / CapCut automation suite for A-Roll editing, B-Roll image alignment, and deterministic cover production."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "jianying-aroll-broll-suite contributors" }]
-keywords = ["jianying", "capcut", "video-editing", "a-roll", "b-roll", "subtitles", "automation"]
-dependencies = []
+keywords = ["jianying", "capcut", "video-editing", "a-roll", "b-roll", "subtitles", "covers", "automation"]
+dependencies = ["Pillow>=10"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

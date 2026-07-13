@@ -10,6 +10,7 @@ Do not commit:
 - real generated media;
 - full production scripts;
 - screenshots;
+- cover reference images and subject identity assets;
 - runtime logs;
 - credentials;
 - cookies;
@@ -18,6 +19,8 @@ Do not commit:
 - large media files.
 
 The `.gitignore` blocks common runtime and media artifacts by default.
+
+The public `cover-maker` includes only code, tests, and a structural template manifest. Bring your own local subject image and font; generated candidates stay in the caller-selected runtime directory.
 
 ## Runtime Safety
 
@@ -28,4 +31,3 @@ The draft writer only operates on readable JSON passed to it. When using encoded
 ## Data Handling
 
 The package does not upload files. It reads local inputs and writes local outputs.
-

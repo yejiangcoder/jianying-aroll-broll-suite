@@ -1,11 +1,12 @@
 # jianying-aroll-broll-suite
 
-Local-first Jianying / CapCut automation suite for A-Roll rough-cut editing and B-Roll AI image alignment.
+Local-first Jianying / CapCut automation suite for A-Roll rough-cut editing, B-Roll AI image alignment, and deterministic cover production.
 
-The repository is organized around two maintained subprojects:
+The repository is organized around three maintained subprojects:
 
 - `jianying-aroll-inspector`: A-Roll v21 inspection, semantic decision, quality-gate, and draft writeback tooling.
 - `jianying-ai-image-aligner`: B-Roll image alignment v0.2, which writes AI image clips into a prepared draft from a `visual_slot_plan`.
+- `cover-maker`: deterministic paired 16:9 / 9:16 cover generation with explicit style routing, state binding, and output validation.
 
 No production media, private drafts, generated images, runtime folders, or credentials are included.
 
@@ -17,6 +18,7 @@ No production media, private drafts, generated images, runtime folders, or crede
 4. Generate or provide B-Roll design data and normalized AI images.
 5. Run `jianying-ai-image-aligner` v0.2 with a `visual_slot_plan`.
 6. QC the final draft after B-Roll image alignment.
+7. Generate three paired cover candidates, validate the package, and promote only the operator-approved set.
 
 The old UI, screenshot-drag, overlay-video, and fixed `1.3s` B-Roll alignment routes have been removed. B-Roll image durations come from `target_end_us - target_start_us` in the visual slot plan.
 
@@ -38,7 +40,8 @@ For file-based DeepSeek config, copy `jianying-aroll-inspector/config/deepseek.e
 ## Quick Checks
 
 ```powershell
-py -3 -m compileall -q "jianying-aroll-inspector\src" "jianying-ai-image-aligner\src"
+py -3 -m compileall -q "jianying-aroll-inspector\src" "jianying-ai-image-aligner\src" "cover-maker\scripts"
+py -3 -m pytest "cover-maker\tests" -q
 ```
 
 With real local inputs, run the B-Roll preflight contract check:
@@ -51,7 +54,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "jianying-ai-image-aligner\r
   -VisualSlotPlan "<path-to-visual-slot-plan.json>"
 ```
 
-Run the larger A-Roll test suite from `jianying-aroll-inspector` when you have the required local draft fixtures and dependencies available.
+Run the larger A-Roll test suite from `jianying-aroll-inspector` when you have the required local draft fixtures and dependencies available. Configure a local Chinese font path in `cover-maker/cover_maker_config.json` before running cover generation on a new machine.
 
 ## License
 

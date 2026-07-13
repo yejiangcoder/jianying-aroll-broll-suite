@@ -1,0 +1,22 @@
+{
+  "schema_version": "cover_template_library.v2",
+  "selection_policy": "Select a declared template_set_id through cover_type routing. Subject identity never selects style.",
+  "default_template_set_id": "s16_schrodinger_white_black",
+  "template_sets": [
+    {
+      "template_set_id": "s16_schrodinger_white_black",
+      "cover_type": "white_editorial",
+      "background": "white_or_near_white",
+      "title": "oversized_black_serif",
+      "subject": "replaceable_approved_subject"
+    },
+    {
+      "template_set_id": "s11_2_confess_face_big_text",
+      "cover_type": "dark_face",
+      "background": "dark_high_contrast",
+      "title": "oversized_white_serif",
+      "subject": "replaceable_approved_subject"
+    }
+  ],
+  "privacy_note": "Reference images and subject assets are intentionally not bundled."
+}
